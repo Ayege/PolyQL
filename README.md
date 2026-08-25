@@ -15,6 +15,22 @@ Translate observability queries across PromQL, LogQL, and vendor DSLs without lo
 
 <img src="assets/demo.gif" alt="PolyQL live translation demo" width="100%" />
 
+## Contents
+
+- [What PolyQL does](#what-polyql-does)
+- [Why it exists](#why-it-exists)
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Supported DSLs](#supported-dsls)
+- [CLI reference](#cli-reference)
+- [Fidelity reporting](#fidelity-reporting)
+- [Architecture](#architecture)
+- [Extending PolyQL](#extending-polyql)
+- [Development](#development)
+- [Contributing](#contributing)
+- [CNCF alignment](#cncf-alignment)
+- [License](#license)
+
 ## What PolyQL does
 
 PolyQL translates observability queries between PromQL, LogQL, TraceQL, and extensible vendor DSLs through a shared telemetry IR aligned to the CNCF QLS semantic specification. Every translation includes an honest fidelity report showing exactly what translated fully, what is lossy, and what is unsupported. It is built to answer a simple operational question: “Can I trust this translated query, and if not, why?”
@@ -27,28 +43,71 @@ Existing translators are usually single-pair and one-directional: a PromQL-to-Lo
 
 ## Quick start
 
+Get a binary, translate a query, and see what it cost you — in under a minute.
+
 ```bash
-# Install
+# 1. Install
 go install github.com/polyql/polyql/cmd/polyql@latest
 
-# Translate a single query live
+# 2. Translate a query
 polyql translate --from promql --to logql \
   --query 'rate(http_requests_total{status="500"}[5m])'
 
-# Translate with full fidelity report
+# 3. See what the translation lost, if anything
 polyql translate --from promql --to logql \
   --query 'sum by (job) (rate(http_requests_total[5m]))' \
   --format json
+```
 
-# Translate a Grafana dashboard
+More ways to use it once you're up and running:
+
+```bash
+# Translate a whole Grafana dashboard, panel by panel
 polyql dashboard translate \
   --from promql --to logql \
   --input dashboard.json \
   --output translated.json \
   --report report.md --report-format markdown
 
-# Use in CI — fail if any construct is unsupported
+# Use in CI — fail the build if any construct is unsupported
 polyql translate --from promql --to logql --file queries.txt || exit 1
+
+# See what languages this binary can read/write, and check a registry directory
+polyql registry list
+polyql registry validate --dir ./my-registry
+```
+
+See [CLI reference](#cli-reference) for the full command surface and exit-code contract, and [Fidelity reporting](#fidelity-reporting) for how to read the report.
+
+## Installation
+
+PolyQL builds to a single static binary with the language registry compiled in — no external services, config files, or network access needed at runtime.
+
+**Go install** (requires [Go 1.25+](https://go.dev/dl/)):
+
+```bash
+go install github.com/polyql/polyql/cmd/polyql@latest
+```
+
+**Build from source:**
+
+```bash
+git clone https://github.com/ayege/polyql
+cd polyql
+make build        # writes ./bin/polyql
+```
+
+**Docker:**
+
+```bash
+docker build -t polyql .
+docker run --rm polyql translate --from promql --to logql --query 'up'
+```
+
+**Verify the install:**
+
+```bash
+polyql version
 ```
 
 ## Supported DSLs
@@ -61,9 +120,35 @@ polyql translate --from promql --to logql --file queries.txt || exit 1
 | NRQL    | —    | —   | Community welcome |
 | DQL     | —    | —   | Community welcome |
 
-## Architecture
+## CLI reference
 
-PolyQL follows a six-stage compiler pipeline: Parse → AST → Resolve → IR → Validate → Emit. The full C4 diagrams live in [docs/](docs/) and the IR model is documented in [docs/c4-level3b-ir-datamodel.mmd](docs/c4-level3b-ir-datamodel.mmd). The data-driven registry is the main extension point: adding a DSL means creating a YAML catalog and matching parser/emitter pair, without changing the compiler core.
+PolyQL exposes a small command surface for interactive use and automation:
+
+| Command                    | Purpose                                                |
+| --------------------------- | ------------------------------------------------------ |
+| `polyql translate`          | Translate a single query, a file of queries, or stdin  |
+| `polyql dashboard translate`| Translate every panel expression in a Grafana dashboard |
+| `polyql registry list`      | List the languages this binary can parse and emit      |
+| `polyql registry validate`  | Check that a directory of language definitions loads    |
+| `polyql registry diff`      | Compare a directory of definitions against the built-in set |
+| `polyql version`            | Print build info and the languages this binary supports |
+
+Global flags, available on every command:
+
+| Flag              | Purpose                                                          |
+| ------------------ | ----------------------------------------------------------------- |
+| `--registry-dir`   | Load language definitions from a directory instead of the compiled-in set |
+| `-v`, `--verbose`  | Log timing and translation detail to stderr                       |
+
+Exit codes are the CLI's contract with a shell script or CI job — they distinguish "the translation lost something" from "the command couldn't run at all":
+
+| Code | Meaning                                                                 |
+| ---- | ------------------------------------------------------------------------ |
+| `0`  | Every construct translated fully                                        |
+| `1`  | The translation ran but lost something (unsupported, or partial with `--fail-on-partial`) |
+| `2`  | The command couldn't run — a query that wouldn't parse, a registry that wouldn't load, an unknown language |
+
+For the full flag set on any command, run `polyql <command> --help`.
 
 ## Fidelity reporting
 
@@ -91,15 +176,34 @@ FLAGS
 
 The three flags are `FULL`, `PARTIAL`, and `UNSUPPORTED`. A score measures structural fidelity only; it is a hint for comparison, not an automatic verdict. PolyQL tells you what it cannot do, not just what it can.
 
-## CLI reference
+## Architecture
 
-PolyQL exposes a small command surface for interactive use and automation:
+PolyQL follows a six-stage compiler pipeline: Parse → AST → Resolve → IR → Validate → Emit. The full C4 diagrams live in [docs/](docs/) and the IR model is documented in [docs/c4-level3b-ir-datamodel.mmd](docs/c4-level3b-ir-datamodel.mmd). The data-driven registry is the main extension point: adding a DSL means creating a YAML catalog and matching parser/emitter pair, without changing the compiler core.
 
-- `polyql translate` — translate a single query, file, or stdin stream
-- `polyql dashboard translate` — translate a whole Grafana dashboard
-- `polyql registry` — inspect or validate the bundled language registry
+## Extending PolyQL
 
-For the full flag set, run `polyql translate --help`.
+Adding a query language needs no changes to the compiler core: write a `registry/{dsl}.yaml` definition describing the language's functions, operators, and what it can and cannot express, then pair it with a parser and/or emitter. Validate a definition in progress with:
+
+```bash
+polyql registry validate --dir ./my-registry
+polyql registry diff --dir ./my-registry
+```
+
+The full walkthrough — including the YAML shape and where parser/emitter code hooks in — lives in [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-new-dsl).
+
+## Development
+
+Common tasks, via the [Makefile](Makefile):
+
+| Command              | Purpose                                              |
+| --------------------- | ----------------------------------------------------- |
+| `make build`          | Build the binary to `./bin/polyql`                    |
+| `make test`           | Run the test suite (`go test ./... -race`)             |
+| `make lint`           | Run golangci-lint                                     |
+| `make roundtrip`      | Run the round-trip fidelity tests                     |
+| `make generate`       | Regenerate the embedded registry from `registry/*.yaml` |
+| `make dashboard-demo` | Translate the sample dashboard, PromQL → LogQL         |
+| `make install`        | Install the binary with version info baked in          |
 
 ## Contributing
 

@@ -13,7 +13,7 @@ make test        # go test ./... -race
 make build       # ./bin/polyql
 ```
 
-Go 1.24 or later. No other tooling is needed to build or test;
+Go 1.25 or later. No other tooling is needed to build or test;
 [golangci-lint](https://golangci-lint.run) is needed for `make lint`.
 
 ## How to contribute
