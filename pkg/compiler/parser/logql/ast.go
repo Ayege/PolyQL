@@ -58,7 +58,7 @@ type Expr interface {
 
 // Duration is a duration literal together with the text it was written as.
 // Keeping the source text means "[5m]" renders back as "5m" rather than being
-// re-derived as "300s", so a translated query stays recognisable to whoever
+// re-derived as "300s", so a translated query stays recognizable to whoever
 // wrote it.
 type Duration struct {
 	Text  string

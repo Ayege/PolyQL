@@ -42,7 +42,7 @@ type ValidationIssue struct {
 	// Flag is the verdict: PARTIAL when the target can approximate the
 	// construct, UNSUPPORTED when it cannot express it at all.
 	Flag ir.TranslatabilityFlag
-	// Reason explains the finding in terms a query author would recognise.
+	// Reason explains the finding in terms a query author would recognize.
 	Reason string
 	// SourceConstruct names what the source wrote, so a fidelity report can
 	// point at the part of the query responsible.

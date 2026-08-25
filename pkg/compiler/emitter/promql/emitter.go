@@ -568,7 +568,7 @@ func (w *writer) exprText(expr ir.IRExpr) string {
 //
 // The rule is the parsers' own precedence table: an operand binding less tightly
 // than the operator above it needs grouping, and so does an equally-binding
-// operand on the side associativity does not favour — "a - (b - c)" must keep
+// operand on the side associativity does not favor — "a - (b - c)" must keep
 // its parentheses, while "a - b - c" needs none.
 func (w *writer) operandText(operand *ir.Query, parent ir.ArithOp, isRight bool) string {
 	text, err := w.emitQuery(operand)
@@ -587,7 +587,7 @@ func (w *writer) operandText(operand *ir.Query, parent ir.ArithOp, isRight bool)
 	case child.Precedence() > parent.Precedence():
 		return text
 	case isRight != parent.IsRightAssociative():
-		// Equal precedence on the side associativity does not favour.
+		// Equal precedence on the side associativity does not favor.
 		return "(" + text + ")"
 	default:
 		return text
@@ -622,19 +622,6 @@ var arithSymbols = map[ir.ArithOp]string{
 func arithSymbol(op ir.ArithOp) (string, bool) {
 	symbol, ok := arithSymbols[op]
 	return symbol, ok
-}
-
-// literalString reads a string literal's value, for the sign carried by a unary
-// stage.
-func literalString(expr ir.IRExpr) string {
-	literal, ok := expr.(*ir.LiteralExpr)
-	if !ok {
-		return ""
-	}
-	if s, ok := literal.Value.(string); ok {
-		return s
-	}
-	return ""
 }
 
 // foldableLeadingFilters splits the pipeline into the leading filters that can

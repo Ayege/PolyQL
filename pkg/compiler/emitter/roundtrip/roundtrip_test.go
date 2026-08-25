@@ -281,7 +281,7 @@ func TestBidirectionalIRIsStable(t *testing.T) {
 	}
 }
 
-// pipelineShape summarises a pipeline as the operations it performs, ignoring
+// pipelineShape summarizes a pipeline as the operations it performs, ignoring
 // the details that legitimately differ between languages — the data source's
 // name, and which spelling each language uses.
 func pipelineShape(query *ir.Query) string {

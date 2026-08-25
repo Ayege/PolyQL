@@ -30,7 +30,7 @@ const testdataDir = "../../testdata"
 
 // scoreTolerance is how far a fidelity score may drift before the case fails.
 // The score is a ratio of node counts, so any real change moves it further than
-// this; the slack is for float formatting rather than for behaviour.
+// this; the slack is for float formatting rather than for behavior.
 const scoreTolerance = 0.05
 
 // ExpectedFlag is one assertion about a node's verdict.
@@ -404,7 +404,7 @@ func (c TestCase) checkBidirectional(t *testing.T, reg *registry.Registry, forwa
 	}
 }
 
-// pipelineShape summarises what a query does, leaving out how each language
+// pipelineShape summarizes what a query does, leaving out how each language
 // spells its data source.
 func pipelineShape(query *ir.Query) string {
 	parts := make([]string, 0, len(query.Pipeline)+1)

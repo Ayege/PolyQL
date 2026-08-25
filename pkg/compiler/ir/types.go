@@ -19,8 +19,8 @@ import (
 	"time"
 )
 
-// enumDef holds the name table backing an int-based enum. It centralises the
-// String, Parse and JSON behaviour so every QLS enum in the IR serialises as a
+// enumDef holds the name table backing an int-based enum. It centralizes the
+// String, Parse and JSON behavior so every QLS enum in the IR serializes as a
 // stable, human-readable symbol ("CUMULATIVE_COUNTER") instead of an ordinal,
 // which keeps fidelity reports and IR dumps diffable.
 type enumDef[T ~int] struct {
@@ -383,7 +383,7 @@ func (t Timestamp) String() string {
 // SourceText, when set, is the duration exactly as the query was written. Nanos
 // is what everything computes with; SourceText only decides how the value goes
 // back out. Keeping it means a LogQL "[90m]" returns as "90m" rather than as the
-// equal but unfamiliar "1h30m" — a translated query its author still recognises
+// equal but unfamiliar "1h30m" — a translated query its author still recognizes
 // is worth more than a canonical one.
 type Interval struct {
 	Nanos      int64  `json:"nanos"`

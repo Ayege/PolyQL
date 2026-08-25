@@ -157,13 +157,13 @@ func TestTranslatePromQLDashboard(t *testing.T) {
 				summary.FidelityScore)
 		}
 		// A finding says which panel it came from.
-		var labelled bool
+		var labeled bool
 		for _, node := range summary.Nodes {
 			if strings.Contains(node.Path, "Latency p99") {
-				labelled = true
+				labeled = true
 			}
 		}
-		if !labelled {
+		if !labeled {
 			t.Errorf("a combined finding should name its panel:\n%s", summary.ToText())
 		}
 

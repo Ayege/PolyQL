@@ -48,6 +48,9 @@ linters-settings:
     locale: US
     ignore-words:
       - polyql
+      # Quoted verbatim from the draft spec's own (incorrect) enum spelling; see
+      # the comment above qlsMetricTypeEnum in pkg/compiler/ir/types.go.
+      - aproximate
 
 issues:
   max-issues-per-linter: 0

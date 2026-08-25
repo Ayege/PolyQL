@@ -39,14 +39,6 @@ func (b *queryBuilder) stage(s ir.PipelineStage) *queryBuilder {
 	return b
 }
 
-func (b *queryBuilder) hint(key, value string) *queryBuilder {
-	if b.query.Hints == nil {
-		b.query.Hints = map[string]string{}
-	}
-	b.query.Hints[key] = value
-	return b
-}
-
 func (b *queryBuilder) subquery(outerRange, resolution time.Duration) *queryBuilder {
 	r := ir.NewInterval(outerRange)
 	step := ir.NewInterval(resolution)

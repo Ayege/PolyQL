@@ -76,11 +76,7 @@ type rendered struct {
 	pipelined bool
 	// atomic reports whether the text needs no parentheses as an operand.
 	atomic bool
-	// join holds a vector-matching clause waiting for its operator.
-	join *joinParts
 }
-
-type joinParts struct{ left, clause, right string }
 
 func (w *writer) emitQuery(query *ir.Query) (string, error) {
 	if reason, ok := emitter.Unsupported(query); ok {
@@ -117,10 +113,6 @@ func (w *writer) emitQuery(query *ir.Query) (string, error) {
 
 	// A log expression that never met a range aggregation is a plain log query,
 	// which is valid on its own.
-	if expr.join != nil {
-		w.notes.Addf("UNSUPPORTED: a vector match was recorded with no operator to apply it; " +
-			"only the left-hand side was written")
-	}
 	return expr.text, nil
 }
 
@@ -777,17 +769,6 @@ func binaryOpOf(query *ir.Query) (ir.ArithOp, bool) {
 		return stage.Op, true
 	}
 	return 0, false
-}
-
-func literalString(expr ir.IRExpr) string {
-	literal, ok := expr.(*ir.LiteralExpr)
-	if !ok {
-		return ""
-	}
-	if s, ok := literal.Value.(string); ok {
-		return s
-	}
-	return ""
 }
 
 // arithSymbols maps the IR's binary operators to LogQL spellings. LogQL borrows

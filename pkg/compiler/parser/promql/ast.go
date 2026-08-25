@@ -316,7 +316,7 @@ type BinaryExpr struct {
 	LHS, RHS       Expr
 	VectorMatching *VectorMatching
 	// ReturnBool is the bool modifier, which turns a comparison's filtering
-	// behaviour into 0/1 values.
+	// behavior into 0/1 values.
 	ReturnBool bool
 }
 

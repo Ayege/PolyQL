@@ -117,7 +117,7 @@ func (q *Query) String() string {
 type Scope int
 
 const (
-	// ScopeUnscoped leaves resolution to the backend, which is the behaviour of
+	// ScopeUnscoped leaves resolution to the backend, which is the behavior of
 	// DSLs with a single flat label namespace. It is deliberately the zero
 	// value: a node built without an explicit scope must not silently claim to
 	// be resource-scoped, since that would change which attributes a TraceQL
