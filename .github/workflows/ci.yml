@@ -9,6 +9,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Best Practice: Principle of least privilege globally
 permissions:
   contents: read
 
@@ -16,6 +17,8 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    # Best Practice: Always set a timeout to prevent hanging tasks from burning Action minutes
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +26,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: check formatting
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "::error::Unformatted files found. Run 'gofmt -w .' locally."
+            gofmt -l .
+            exit 1
+          fi
 
       - name: check the embedded registry is in sync
         run: |
@@ -39,31 +50,49 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
-      - name: upload coverage
-        uses: codecov/codecov-action@v4
-        continue-on-error: true
-        with:
-          files: coverage.out
-          fail_ci_if_error: false
-
   lint:
     name: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          args: --skip-config-verify
+
+  security:
+    name: vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Best Practice: Official Go vulnerability scanner
+      - name: run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          repo-checkout: false # We already checked out code above
 
   build-and-smoke:
     name: build and smoke test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Best Practice: Gate downstream tasks. Only run if tests, lints, and security checks pass.
+    needs: [test, lint, security]
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -87,8 +116,10 @@ jobs:
   vhs-demo-check:
     name: vhs demo check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - name: validate VHS tape compiles cleanly
         uses: charmbracelet/vhs-action@v2
         with:
