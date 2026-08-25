@@ -1,0 +1,13 @@
+name: 'logfmt parser stage'
+description: 'The other common parser.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} | logfmt'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.6667
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+notes: 'As with json, there is nothing in PromQL to map it onto.'

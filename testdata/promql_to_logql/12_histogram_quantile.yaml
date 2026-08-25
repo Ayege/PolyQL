@@ -1,0 +1,17 @@
+name: 'histogram_quantile'
+description: 'An aggregation LogQL has no equivalent for at any scope.'
+source_dsl: promql
+target_dsl: logql
+input: 'histogram_quantile(0.99, sum by (le) (rate(x[5m])))'
+expected_output: 'sum by (le) (rate({__name__="x"}[5m]))'
+expected_fidelity_score: 0.7500
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[2].AggregationStage'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].AggregationStage'
+    flag: FULL
+  - path: 'Query.Pipeline[1].AggregationStage'
+    flag: FULL
+notes: 'The histogram_quantile stage is dropped; the rate and sum beneath it still translate, and the output is the largest valid prefix of the query.'

@@ -1,0 +1,95 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: check the embedded registry is in sync
+        run: |
+          go generate ./...
+          git diff --exit-code -- pkg/registry/data/ \
+            || { echo "::error::pkg/registry/data is stale; run 'make generate' and commit the result"; exit 1; }
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test ./... -race -count=1 -coverprofile=coverage.out -covermode=atomic
+
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+      - name: upload coverage
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  build-and-smoke:
+    name: build and smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build binary for linux/amd64
+        run: GOOS=linux GOARCH=amd64 go build -o polyql ./cmd/polyql
+
+      - name: smoke tests
+        run: |
+          ./polyql version
+          ./polyql registry list
+          ./polyql translate --from promql --to logql --query 'up'
+          ./polyql dashboard translate --from promql --to logql --input testdata/dashboards/sample_promql.json --format json > /dev/null
+
+      - name: verify exit codes
+        run: |
+          ./polyql translate --from promql --to logql --query 'rate(http_requests_total{status="500"}[5m])' >/dev/null
+          ./polyql translate --from promql --to logql --query 'histogram_quantile(0.99, x)' --format json >/dev/null || true
+
+  vhs-demo-check:
+    name: vhs demo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate VHS tape compiles cleanly
+        uses: charmbracelet/vhs-action@v2
+        with:
+          tape: assets/demo.tape

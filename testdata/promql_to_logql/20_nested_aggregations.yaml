@@ -1,0 +1,13 @@
+name: 'deeply nested aggregations with a join'
+description: 'The hardest shape: a parameterised aggregation over a join over two rates.'
+source_dsl: promql
+target_dsl: logql
+input: 'topk(5, sum by (job) (rate(x[5m]))) / ignoring (job) group_left sum(rate(y[5m]))'
+expected_output: 'topk(5, sum by (job) (rate({__name__="x"}[5m])))'
+expected_fidelity_score: 0.8750
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[3].JoinStage'
+    flag: UNSUPPORTED
+notes: 'Everything except the join translates. The join is what stops it, and the report names the join rather than blaming the whole query.'

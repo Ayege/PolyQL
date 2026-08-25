@@ -1,0 +1,12 @@
+name: 'rate survives a round trip'
+description: 'PromQL rate translated to LogQL and back must describe the same operation.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(x[5m])'
+expected_output: 'rate({__name__="x"}[5m])'
+expected_fidelity_score: 0.8000
+bidirectional: true
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: "The data source is represented differently in each language — a name here, a __name__ matcher there — so the comparison is of the pipeline and its window, not of the selector's spelling."

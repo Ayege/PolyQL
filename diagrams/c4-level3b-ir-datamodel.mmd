@@ -1,0 +1,272 @@
+classDiagram
+    direction TB
+
+    class Query {
+        +SignalType signal
+        +DataSource source
+        +Pipeline pipeline
+        +Output output
+        +map~string,string~ hints
+    }
+
+    class SignalType {
+        <<enumeration>>
+        METRIC
+        LOG
+        SPAN
+        PROFILE
+    }
+
+    class DataSource {
+        +string name
+        +Scope scope
+        +Selector[] selectors
+    }
+
+    class Scope {
+        <<enumeration>>
+        RESOURCE
+        SPAN
+        INTRINSIC
+        UNSCOPED
+    }
+
+    class Selector {
+        +LabelMatcher[] matchers
+    }
+
+    class LabelMatcher {
+        +string key
+        +MatchOp op
+        +string value
+    }
+
+    class MatchOp {
+        <<enumeration>>
+        EQ
+        NEQ
+        REGEX
+        NOT_REGEX
+        GT
+        GTE
+        LT
+        LTE
+        IN
+        NOT_IN
+        IS_NULL
+        IS_NOT_NULL
+        CONTAINS
+        NOT_CONTAINS
+    }
+
+    class Pipeline {
+        +PipelineStage[] stages
+    }
+
+    class PipelineStage {
+        <<interface>>
+    }
+
+    class FilterStage {
+        +Predicate predicate
+        +bool returnsBool
+    }
+
+    class AggregationStage {
+        +AggOp op
+        +string[] groupBy
+        +string[] without
+        +AggScope scope
+    }
+
+    class AggOp {
+        <<enumeration>>
+        SUM
+        AVG
+        MIN
+        MAX
+        COUNT
+        COUNT_DISTINCT
+        STDDEV
+        QUANTILE
+        RATE
+        INCREASE
+        DELTA
+        IRATE
+        HISTOGRAM_QUANTILE
+        TOPK
+        BOTTOMK
+    }
+
+    class AggScope {
+        <<enumeration>>
+        TEMPORAL
+        GROUP
+    }
+
+    class FunctionStage {
+        +string name
+        +IRExpr[] args
+        +QlsDataType returnType
+    }
+
+    class JoinStage {
+        +JoinType joinType
+        +string[] onLabels
+        +string[] ignoreLabels
+        +string[] includeLabels
+        +Query rightSide
+    }
+
+    class BinaryOpStage {
+        +ArithOp op
+        +Query left
+        +Query right
+    }
+
+    class ArithOp {
+        <<enumeration>>
+        ADD
+        SUB
+        MUL
+        DIV
+        MOD
+        POW
+        AND
+        OR
+        UNLESS
+        EQ
+        NEQ
+        GT
+        GTE
+        LT
+        LTE
+    }
+
+    class JoinType {
+        <<enumeration>>
+        INNER
+        LEFT_OUTER
+        RIGHT_OUTER
+        FULL_OUTER
+        CROSS
+    }
+
+    class Output {
+        +TimeRange range
+        +Window window
+        +string[] groupBy
+        +SortOrder sort
+        +int limit
+        +Interval subqueryRange
+        +Interval subqueryStep
+    }
+
+    class TimeRange {
+        +Timestamp start
+        +Timestamp end
+    }
+
+    class Window {
+        +Interval step
+        +Interval offset
+        +WindowAlignment alignment
+    }
+
+    class Interval {
+        +int64 nanos
+        +string sourceText
+    }
+
+    class WindowAlignment {
+        <<enumeration>>
+        UTC_NORMALIZED
+        CALENDAR_ALIGNED
+        QUERY_START_ALIGNED
+    }
+
+    class QlsDataType {
+        <<enumeration>>
+        DOUBLE
+        SIGNED_INT
+        UNSIGNED_INT
+        STRING
+        BINARY_STRING
+        BOOLEAN
+        TIMESTAMP
+        INTERVAL
+        MAP
+        ARRAY
+        JSON
+    }
+
+    class QlsMetricType {
+        <<enumeration>>
+        UNKNOWN
+        CUMULATIVE_COUNTER
+        DELTA_COUNTER
+        GAUGE
+        RATE
+        HISTOGRAM
+        APPROXIMATE_COUNT
+        APPROXIMATE_DISTRIBUTION
+        CUSTOM
+    }
+
+    class QlsLogSeverity {
+        <<enumeration>>
+        TRACE
+        DEBUG
+        INFO
+        WARN
+        ERROR
+        FATAL
+    }
+
+    class QlsSpanKind {
+        <<enumeration>>
+        CLIENT
+        SERVER
+        PRODUCER
+        CONSUMER
+        INTERNAL
+    }
+
+    class TranslatabilityFlag {
+        <<enumeration>>
+        FULL
+        PARTIAL
+        UNSUPPORTED
+    }
+
+    class IRNode {
+        +TranslatabilityFlag flag
+        +string reason
+    }
+
+    Query --> SignalType
+    Query --> DataSource
+    Query --> Pipeline
+    Query --> Output
+    DataSource --> Scope
+    DataSource --> Selector
+    Selector --> LabelMatcher
+    LabelMatcher --> MatchOp
+    Pipeline --> PipelineStage
+    PipelineStage <|-- FilterStage
+    PipelineStage <|-- AggregationStage
+    PipelineStage <|-- FunctionStage
+    PipelineStage <|-- JoinStage
+    PipelineStage <|-- BinaryOpStage
+    AggregationStage --> AggOp
+    AggregationStage --> AggScope
+    FunctionStage --> QlsDataType
+    JoinStage --> JoinType
+    BinaryOpStage --> ArithOp
+    BinaryOpStage --> Query : left, right
+    Output --> TimeRange
+    Output --> Window
+    Window --> WindowAlignment
+    Window --> Interval : step, offset
+    Output --> Interval : subqueryRange, subqueryStep
+    IRNode --> TranslatabilityFlag

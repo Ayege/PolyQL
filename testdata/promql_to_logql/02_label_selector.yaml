@@ -1,0 +1,15 @@
+name: 'selector with several matchers'
+description: 'Equality matchers carry across unchanged.'
+source_dsl: promql
+target_dsl: logql
+input: 'http_requests_total{status="500",method="GET"}'
+expected_output: '{__name__="http_requests_total", status="500", method="GET"}'
+expected_fidelity_score: 0.8333
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Source.Selectors[0].Matchers[0]'
+    flag: FULL
+  - path: 'Query.Source.Selectors[0].Matchers[1]'
+    flag: FULL
+notes: 'Every matcher survives; only the metric name has to move into the braces.'

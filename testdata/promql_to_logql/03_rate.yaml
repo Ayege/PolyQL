@@ -1,0 +1,13 @@
+name: 'rate over a range'
+description: 'The canonical temporal aggregation, present in both languages on the same axis.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(http_requests_total[5m])'
+expected_output: 'rate({__name__="http_requests_total"}[5m])'
+expected_fidelity_score: 0.8000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].AggregationStage'
+    flag: FULL
+notes: 'rate is IR RATE on the temporal axis in both languages, so the stage itself is exact.'

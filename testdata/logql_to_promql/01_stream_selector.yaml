@@ -1,0 +1,13 @@
+name: 'stream selector'
+description: 'A bare LogQL stream selector.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="frontend"}'
+expected_output: '{app="frontend"}'
+expected_fidelity_score: 0.8000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Source.Selectors[0].Matchers[0]'
+    flag: FULL
+notes: 'A stream selector is already a PromQL-shaped selector; only the signal differs.'

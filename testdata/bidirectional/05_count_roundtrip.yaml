@@ -1,0 +1,12 @@
+name: 'count over time survives a round trip'
+description: 'The aggregation both languages spell identically.'
+source_dsl: logql
+target_dsl: promql
+input: 'count_over_time({app="frontend"}[1h])'
+expected_output: 'count_over_time({app="frontend"}[1h])'
+expected_fidelity_score: 0.8571
+bidirectional: true
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'Starting from LogQL this time, so the round trip is exercised in both directions rather than only from PromQL.'

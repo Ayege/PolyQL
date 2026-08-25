@@ -1,0 +1,32 @@
+C4Container
+    title PolyQL — C4 Level 2: Container diagram
+
+    Person(user, "User", "SRE, platform engineer, or CI/CD pipeline")
+
+    System_Boundary(polyql, "PolyQL system") {
+
+        Container(cli, "CLI", "Go binary", "polyql translate — single query or file input, emits translated query + fidelity report to stdout/file")
+        Container(proxy, "Federation proxy", "Go, gRPC + HTTP", "Accepts a query in source DSL, translates via IR, forwards to target backend, returns results. Supports PromQL-compatible /api/v1/query endpoint.")
+        Container(dashxlate, "Dashboard translator", "Go binary", "Reads Grafana dashboard JSON, translates all panel expressions from source DSL to target DSL, outputs new dashboard JSON + per-panel fidelity report")
+
+        Container(compiler, "Core compiler library", "Go package", "Shared library imported by CLI, proxy, and dashboard translator. Houses parser registry, resolver, IR builder, validator, emitter registry, and fidelity reporter.")
+
+        ContainerDb(langreg, "Language registry", "YAML/JSON files", "Data-driven DSL definitions: operator mappings, function catalogs, type coercion rules, aggregation semantics. One file per supported DSL.")
+        Container(otel, "OTel exporter", "Go, OTLP", "Emits OpenTelemetry spans for every translation: source DSL, target DSL, IR node count, fidelity score, latency.")
+    }
+
+    System_Ext(grafana, "Grafana", "Dashboard JSON source")
+    System_Ext(backends, "Observability backends", "Prometheus, Loki, Tempo, vendor APIs")
+
+    Rel(user, cli, "Runs", "Shell / CI")
+    Rel(user, proxy, "Sends queries", "gRPC / HTTP")
+    Rel(user, dashxlate, "Passes dashboard JSON", "CLI")
+    Rel(dashxlate, grafana, "Reads dashboard JSON", "HTTP API")
+    Rel(cli, compiler, "Calls", "Go import")
+    Rel(proxy, compiler, "Calls", "Go import")
+    Rel(dashxlate, compiler, "Calls", "Go import")
+    Rel(compiler, langreg, "Loads DSL definitions", "File read at startup")
+    Rel(compiler, otel, "Emits translation spans", "OTLP")
+    Rel(proxy, backends, "Forwards translated query", "Backend-native API")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

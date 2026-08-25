@@ -1,0 +1,13 @@
+name: 'label_format stage'
+description: 'Rewriting a label through a template.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} | label_format new="old"'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.7500
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+notes: "PromQL's label_replace is a different operation over a different input."

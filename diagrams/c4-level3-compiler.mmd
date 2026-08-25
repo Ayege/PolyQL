@@ -1,0 +1,48 @@
+C4Component
+    title PolyQL — C4 Level 3: Core compiler library components
+
+    Container_Boundary(compiler, "Core compiler library (Go package)") {
+
+        Component(parserReg, "Parser registry", "Go interface + map", "Routes source DSL string to the correct parser implementation. Extensible — community registers new parsers via init().")
+
+        Component(promParser, "PromQL parser", "Go, Pratt parser", "Parses PromQL text into PromQL-specific AST. Handles: instant/range vectors, label matchers, binary ops, aggregation ops, functions, subqueries.")
+        Component(logParser, "LogQL parser", "Go, Pratt parser", "Parses LogQL text into LogQL-specific AST. Handles: log stream selectors, pipeline stages (line_filter, label_filter, parser, formatter), metric queries (rate, count_over_time, etc.).")
+        Component(traceParser, "TraceQL parser", "Go, Pratt parser", "Parses TraceQL text into TraceQL-specific AST. Handles: spanset selectors, intrinsic/resource/span scope, structural operators (>> , ~ , etc.), aggregate pipelines.")
+        Component(pluginParser, "Plugin parser slot", "Go interface", "Extension point for community-contributed DSLs (NRQL, DQL, InfluxQL). Implements the same Parser interface.")
+
+        Component(resolver, "Resolver + IR builder", "Go", "Walks a DSL-specific AST and maps each node to a TelemetryIR node. Uses the language registry for function-name mapping, operator equivalence, and type coercion rules. This is the core translation logic.")
+
+        Component(ir, "TelemetryIR", "Go structs", "Shared intermediate representation. A tree of typed nodes aligned to the CNCF QLS semantic spec data models. Root: Query node. Children: SignalType (metric|log|span|profile), DataSource (name, scope), Selector (label matchers using QLS Attributes model), Pipeline (ordered stages: Filter, Aggregation, Function, Join), Output (time range using QLS Timestamp/Interval types, windowing using QLS time-based windowing semantics, group-by using QLS aggregation rules).")
+
+        Component(validator, "Semantic validator", "Go", "Validates the IR tree: type compatibility (QLS data types: Double, SignedInt, String, Boolean, Timestamp, Interval, Map, Array, JSON), function arity, aggregation scope (temporal vs group per QLS spec), predicate validity (comparison, in, NULL, similar/regex per QLS selection predicates), windowing alignment (UTC normalization per QLS time-based windowing). Annotates each IR node with a TranslatabilityFlag (full|partial|unsupported) for the target DSL.")
+
+        Component(emitterReg, "Emitter registry", "Go interface + map", "Routes target DSL string to the correct emitter implementation. Same extensibility pattern as parser registry.")
+
+        Component(promEmitter, "PromQL emitter", "Go", "Renders validated IR tree back into idiomatic PromQL text. Handles vector selectors, label matchers, aggregation operators, recording-rule-style output.")
+        Component(logEmitter, "LogQL emitter", "Go", "Renders validated IR tree into idiomatic LogQL text. Handles stream selectors, pipeline stage ordering, metric-over-logs functions.")
+        Component(traceEmitter, "TraceQL emitter", "Go", "Renders validated IR tree into idiomatic TraceQL text. Handles spanset selectors, scope prefixing, structural operators, aggregate pipelines.")
+        Component(pluginEmitter, "Plugin emitter slot", "Go interface", "Extension point for community-contributed target DSLs.")
+
+        Component(fidelity, "Fidelity reporter", "Go", "Walks the IR tree after emission. For each node, reads the TranslatabilityFlag and produces a per-node report: fully translated, partially translated (with reason), or unsupported (with reason). Aggregates into a summary: total nodes, full count, partial count, unsupported count, overall fidelity score (0.0–1.0). Produces JSON and human-readable output.")
+
+        Component(langReg, "Language registry loader", "Go + YAML", "Reads per-DSL definition files at startup. Each file declares: function catalog (name → IR function kind + arity + return type), operator mappings (DSL operator → IR predicate kind), type coercion rules (DSL type → QLS data type), aggregation semantics (temporal vs group, default behaviors per QLS aggregation math rules), metric type mappings (DSL type enum → QLS metric type: CUMULATIVE_COUNTER, DELTA_COUNTER, GAUGE, RATE, HISTOGRAM, etc.).")
+    }
+
+    Rel(parserReg, promParser, "Dispatches 'promql'")
+    Rel(parserReg, logParser, "Dispatches 'logql'")
+    Rel(parserReg, traceParser, "Dispatches 'traceql'")
+    Rel(parserReg, pluginParser, "Dispatches community DSLs")
+    Rel(promParser, resolver, "AST")
+    Rel(logParser, resolver, "AST")
+    Rel(traceParser, resolver, "AST")
+    Rel(resolver, ir, "Builds")
+    Rel(langReg, resolver, "Supplies mappings")
+    Rel(ir, validator, "Validates")
+    Rel(validator, emitterReg, "Validated IR")
+    Rel(emitterReg, promEmitter, "Dispatches 'promql'")
+    Rel(emitterReg, logEmitter, "Dispatches 'logql'")
+    Rel(emitterReg, traceEmitter, "Dispatches 'traceql'")
+    Rel(emitterReg, pluginEmitter, "Dispatches community DSLs")
+    Rel(validator, fidelity, "TranslatabilityFlags")
+
+    UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")

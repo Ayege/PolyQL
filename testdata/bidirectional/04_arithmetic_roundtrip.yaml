@@ -1,0 +1,12 @@
+name: 'arithmetic survives a round trip'
+description: 'A binary operator with a sub-query on each side.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(a[5m]) / rate(b[5m])'
+expected_output: 'rate({__name__="a"}[5m]) / rate({__name__="b"}[5m])'
+expected_fidelity_score: 0.9231
+bidirectional: true
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'The operator is typed in the IR rather than carried as text, so it cannot be corrupted by a spelling difference.'

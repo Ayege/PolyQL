@@ -1,0 +1,13 @@
+name: 'decolorize stage'
+description: 'Stripping ANSI sequences from log lines.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} | decolorize'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.6667
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+notes: 'An operation on text, which PromQL has none of.'

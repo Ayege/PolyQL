@@ -1,0 +1,13 @@
+name: 'bytes_rate'
+description: 'A range function measuring payload size rather than entry count.'
+source_dsl: logql
+target_dsl: promql
+input: 'bytes_rate({app="x"}[5m])'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.7143
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+notes: 'The registry deliberately gives bytes_rate no IR aggregation operator: it does not measure what RATE measures, and claiming otherwise would hide the difference.'

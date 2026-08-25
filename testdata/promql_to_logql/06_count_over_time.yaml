@@ -1,0 +1,13 @@
+name: 'count over time'
+description: 'A range aggregation both languages spell the same way.'
+source_dsl: promql
+target_dsl: logql
+input: 'count_over_time(up[5m])'
+expected_output: 'count_over_time({__name__="up"}[5m])'
+expected_fidelity_score: 0.8000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].AggregationStage'
+    flag: FULL
+notes: 'IR COUNT on the temporal axis is count_over_time in both languages.'

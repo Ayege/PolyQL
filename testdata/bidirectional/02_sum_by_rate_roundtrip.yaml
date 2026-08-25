@@ -1,0 +1,12 @@
+name: 'grouped rate survives a round trip'
+description: 'Two aggregation levels through both translations.'
+source_dsl: promql
+target_dsl: logql
+input: 'sum by (job) (rate(x[5m]))'
+expected_output: 'sum by (job) (rate({__name__="x"}[5m]))'
+expected_fidelity_score: 0.8333
+bidirectional: true
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'Both the operators and the grouping labels must come back unchanged.'

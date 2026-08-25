@@ -1,0 +1,13 @@
+name: 'subquery'
+description: 'An expression evaluated over an outer range at its own resolution.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(x[5m])[30m:1m]'
+expected_output: 'rate({__name__="x"}[5m])'
+expected_fidelity_score: 0.6000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Output'
+    flag: UNSUPPORTED
+notes: 'LogQL has no subquery form. The inner expression is written without its outer range and resolution, and both the Output node and the query say so.'

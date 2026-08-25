@@ -1,0 +1,13 @@
+name: 'line filter with an alternation'
+description: 'A genuine regex line filter.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} |~ "error|warn"'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.7500
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FilterStage.Predicate'
+    flag: UNSUPPORTED
+notes: 'Distinct from the containment case above: this operand really is a pattern.'

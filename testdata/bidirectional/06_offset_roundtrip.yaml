@@ -1,0 +1,12 @@
+name: 'offset survives a round trip'
+description: 'A window offset through both translations.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(x[5m] offset 1h)'
+expected_output: 'rate({__name__="x"}[5m] offset 1h)'
+expected_fidelity_score: 0.8000
+bidirectional: true
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'The offset is part of the window rather than of the selector, so it has to survive the selector being represented differently.'

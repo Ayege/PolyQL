@@ -1,0 +1,11 @@
+name: 'arithmetic between two rates'
+description: 'A binary operator over two sub-queries.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(a[5m]) + rate(b[5m])'
+expected_output: 'rate({__name__="a"}[5m]) + rate({__name__="b"}[5m])'
+expected_fidelity_score: 0.9231
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'The operator is an IR BinaryOpStage with both operands as sub-queries, so each side is translated and reported in its own right.'

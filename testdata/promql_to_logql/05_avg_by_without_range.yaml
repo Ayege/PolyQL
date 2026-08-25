@@ -1,0 +1,11 @@
+name: 'group aggregation with no range'
+description: 'A group aggregation directly over a selector, which LogQL cannot express.'
+source_dsl: promql
+target_dsl: logql
+input: 'avg by (instance) (node_cpu_seconds_total)'
+expected_output: '{__name__="node_cpu_seconds_total"}'
+expected_fidelity_score: 0.7500
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'LogQL cannot aggregate log lines across streams without a range aggregation first, so the avg is dropped and reported rather than approximated.'

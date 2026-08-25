@@ -1,0 +1,13 @@
+name: 'line_format stage'
+description: 'Rewriting the log line itself.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} | line_format "{{.msg}}"'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.7143
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+notes: 'PromQL has no log line to rewrite.'

@@ -1,0 +1,17 @@
+name: 'all four matcher operators'
+description: 'Equality, inequality, regex and negated regex in one selector.'
+source_dsl: promql
+target_dsl: logql
+input: 'foo{a="1",b!="2",c=~"3",d!~"4"}'
+expected_output: '{__name__="foo", a="1", b!="2", c=~"3", d!~"4"}'
+expected_fidelity_score: 0.6250
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Source.Selectors[0].Matchers[2]'
+    flag: PARTIAL
+  - path: 'Query.Source.Selectors[0].Matchers[3]'
+    flag: PARTIAL
+  - path: 'Query.Source.Selectors[0].Matchers[1]'
+    flag: FULL
+notes: 'The two regex matchers draw a dialect warning: both languages use RE2, but they differ in what they anchor and how a pattern must be escaped once embedded.'

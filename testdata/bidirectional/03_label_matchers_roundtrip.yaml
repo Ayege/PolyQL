@@ -1,0 +1,12 @@
+name: 'matcher operators survive a round trip'
+description: 'Equality and inequality matchers through both translations.'
+source_dsl: promql
+target_dsl: logql
+input: 'count_over_time(foo{a="1",b!="2"}[5m])'
+expected_output: 'count_over_time({__name__="foo", a="1", b!="2"}[5m])'
+expected_fidelity_score: 0.8750
+bidirectional: true
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'Matcher operators map one-to-one, so none should change on the way out and back.'

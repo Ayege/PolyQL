@@ -1,0 +1,13 @@
+name: 'rate with an offset'
+description: 'The offset modifier, which both languages write the same way.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(http_requests_total[5m] offset 1h)'
+expected_output: 'rate({__name__="http_requests_total"}[5m] offset 1h)'
+expected_fidelity_score: 0.8000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].AggregationStage'
+    flag: FULL
+notes: 'The offset attaches to the range in both languages and survives verbatim.'

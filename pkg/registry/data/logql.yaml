@@ -1,0 +1,395 @@
+# LogQL language definition for PolyQL.
+#
+# See promql.yaml for the full explanation of the schema. In short: set
+# `ir_kind` when a function IS one of the IR's aggregation operators, with
+# `agg_scope` recording whether it collapses over time (TEMPORAL) or across
+# streams (GROUP); omit it when there is no honest IR equivalent, and the
+# function becomes a FunctionStage that the validator judges per target.
+
+dsl: logql
+
+# LogQL queries logs. Its metric functions derive samples from log lines at
+# query time, but the data source is always a log stream, which is what the IR
+# SignalType records.
+signal_types: [log]
+
+capabilities:
+  # LogQL has no join. There is no way to correlate two streams on their labels
+  # the way PromQL's vector matching does, so any IR JoinStage translated into
+  # LogQL must be flagged UNSUPPORTED rather than approximated.
+  joins: false
+  join_types: []
+  # LogQL has no subquery syntax: a range can only be taken over a log stream,
+  # not over the result of another metric expression.
+  subqueries: false
+  # LogQL's syntax fixes the order of pipeline stages: line filters, then a
+  # parser, then label filters over what the parser extracted, then formatters,
+  # then the unwrap. A label filter cannot precede the parser that produces the
+  # label it names.
+  pipeline_ordered: true
+  # LogQL windows normalise on UTC boundaries and offer no calendar alignment.
+  window_alignments: [UTC_NORMALIZED]
+  # LogQL has no bool modifier: a comparison always filters.
+  bool_modifier: false
+
+aggregation_defaults:
+  # QLS §Aggregation, same as every DSL.
+  null_substitute_add: 0
+  null_substitute_mul: 1
+  null_substitute_div: 0
+  # LogQL represents absent data by returning no series at all, rather than by
+  # emitting a NaN sentinel the way PromQL does. That is already what QLS means
+  # by NULL, so nothing needs converting on the way in. Translating the other
+  # direction is the lossy one: a PromQL NaN sentinel has no LogQL spelling.
+  nan_as_sentinel: false
+
+# The canonical form the LogQL parser renders back to. See promql.yaml for what
+# this section is for.
+normalizations:
+  # sum by (level) (...), not sum(...) by (level). LogQL accepts both.
+  aggregation_clause_position: before_operand
+  # Durations keep the units they were written with: [90m] stays [90m] rather
+  # than becoming [1h30m]. LogQL admits fractional durations such as 1.5h, which
+  # have no single largest-unit spelling, and rewriting a user's units makes a
+  # translated query harder to recognise.
+  duration_format: verbatim
+  # Single-quoted and backquoted strings are re-emitted double-quoted. Note that
+  # templates are conventionally written with backticks in hand-authored LogQL,
+  # to avoid escaping the quotes inside them.
+  string_quoting: double
+
+type_coercion:
+  # A log pipeline yields log lines. QLS types a log body as String, Binary
+  # String or JSON; String is the coercion that always holds.
+  log_stream: STRING
+  # Metric expressions yield samples, matching PromQL's vector types.
+  instant_vector: DOUBLE
+  range_vector: DOUBLE
+  # An unwrapped range carries the numeric values extracted from log labels.
+  unwrapped_range: DOUBLE
+  scalar: DOUBLE
+  string: STRING
+  # Label filters compare against typed literals, which the IR keeps distinct
+  # because a duration and a byte count are not interchangeable numbers.
+  duration: INTERVAL
+  bytes: UNSIGNED_INT
+  number: DOUBLE
+
+metric_types:
+  # LogQL declares no metric types: nothing about a log stream says "counter".
+  # These entries describe what its derivations produce, so the resolver can
+  # label the IR metric source honestly rather than leaving it UNKNOWN.
+  unknown: UNKNOWN
+  # count_over_time and bytes_over_time count within a window, which is a delta
+  # rather than a running total.
+  counter: DELTA_COUNTER
+  # An unwrapped label read at a point in time fluctuates freely.
+  gauge: GAUGE
+
+operators:
+  # These four are written both inside a stream selector's braces and as label
+  # filters after a parser stage, so their context is "any". LogQL uses the same
+  # spelling for both, and only the position in the pipeline distinguishes them.
+  "=":  { ir_op: EQ,        context: any }
+  "!=": { ir_op: NEQ,       context: any }
+  "=~": { ir_op: REGEX,     context: any }
+  "!~": { ir_op: NOT_REGEX, context: any }
+
+  # Label filter comparisons, written after a parser stage.
+  "==": { ir_op: EQ,  context: comparison }
+  ">":  { ir_op: GT,  context: comparison }
+  ">=": { ir_op: GTE, context: comparison }
+  "<":  { ir_op: LT,  context: comparison }
+  "<=": { ir_op: LTE, context: comparison }
+
+  # Line filters, which match the whole log line rather than an attribute.
+  #
+  # QLS §Selection has no containment predicate: its predicate set is
+  # comparison, IN, NULL, similar (regex), period and CIDR. A substring test
+  # therefore lowers to the similar predicate over the log body, which is a
+  # faithful but not free translation — an emitter going the other way has to
+  # escape the operand and unanchor the pattern. The validator reports that.
+  # A line filter tests the raw line rather than an attribute. "|=" is
+  # containment: it matches a literal substring, which is neither equality nor a
+  # pattern, so it maps to the IR's CONTAINS rather than being lowered to a
+  # regex. Lowering would change what it matches — the dot in "error.log" would
+  # stop being a dot.
+  #
+  # The negated forms are spelled "!=" and "!~", the same as the selector
+  # matchers above, and this table is keyed by spelling. They are therefore
+  # keyed by name and give their spelling explicitly. LogQL itself tells the two
+  # readings apart by position, and the parser resolves that before the resolver
+  # consults this table.
+  line_contains:          { symbol: "|=", ir_op: CONTAINS,     context: line_filter }
+  line_matches_regex:     { symbol: "|~", ir_op: REGEX,        context: line_filter }
+  line_not_contains:      { symbol: "!=", ir_op: NOT_CONTAINS, context: line_filter }
+  line_not_matches_regex: { symbol: "!~", ir_op: NOT_REGEX,    context: line_filter }
+
+# ## Not yet supported
+#
+# These LogQL features are deliberately outside the MVP. They are recent Loki
+# additions with limited adoption, and each would need an IR construct that only
+# LogQL can produce or consume — which lowers the fidelity score of every other
+# pair without buying anything in practice. The gap is intentional, not an
+# oversight:
+#
+#   |> and !>          Pattern line filters. A pattern match is neither the
+#                      containment nor the regex predicate QLS defines, so it
+#                      would need a predicate of its own.
+#
+#   |= "a" or "b"      Line-filter alternation. Expressible today by writing the
+#                      alternation as a regex: |~ "a|b".
+#
+#   | addr = ip("...") IP and CIDR label filters. QLS §Selection does reserve a
+#                      CIDR predicate, but it is marked TODO in the draft spec,
+#                      so there is nothing stable to map onto yet. This is the
+#                      likeliest of the three to arrive first.
+#
+# Adding one means extending the IR, both parsers' round-trip tests, and the
+# fidelity rules together — not just this file.
+
+functions:
+  # --- Log range aggregations (temporal axis, over log lines) ---------------
+  rate:
+    ir_kind: RATE
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  count_over_time:
+    ir_kind: COUNT
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  # bytes_rate and bytes_over_time measure payload size rather than entry
+  # count. IR RATE and COUNT would claim an equivalence that does not hold, so
+  # these stay functions and translate as PARTIAL at best.
+  bytes_rate:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  bytes_over_time:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: UNSIGNED_INT
+  absent_over_time:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+
+  # --- Unwrapped range aggregations (temporal axis, over extracted values) --
+  rate_counter:
+    # A rate over an unwrapped counter label. Shares IR RATE with `rate`; an
+    # emitter picks between them by whether the range is unwrapped.
+    ir_kind: RATE
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  sum_over_time:
+    ir_kind: SUM
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  avg_over_time:
+    ir_kind: AVG
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  min_over_time:
+    ir_kind: MIN
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  max_over_time:
+    ir_kind: MAX
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  stddev_over_time:
+    ir_kind: STDDEV
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  quantile_over_time:
+    ir_kind: QUANTILE
+    agg_scope: TEMPORAL
+    arity: 2
+    arg_types: [scalar, unwrapped_range]
+    return_type: DOUBLE
+  stdvar_over_time:
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  first_over_time:
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+  last_over_time:
+    arity: 1
+    arg_types: [unwrapped_range]
+    return_type: DOUBLE
+
+  # --- Vector aggregations across streams (group axis) ---------------------
+  sum:
+    ir_kind: SUM
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  avg:
+    ir_kind: AVG
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  min:
+    ir_kind: MIN
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  max:
+    ir_kind: MAX
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  count:
+    ir_kind: COUNT
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  stddev:
+    ir_kind: STDDEV
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  topk:
+    ir_kind: TOPK
+    agg_scope: GROUP
+    arity: 2
+    arg_types: [scalar, instant_vector]
+    return_type: DOUBLE
+  bottomk:
+    ir_kind: BOTTOMK
+    agg_scope: GROUP
+    arity: 2
+    arg_types: [scalar, instant_vector]
+    return_type: DOUBLE
+  stdvar:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  # An approximate top-k is not IR TOPK: it trades exactness for cost, and
+  # saying otherwise would hide that from the fidelity report.
+  approx_topk:
+    arity: 2
+    arg_types: [scalar, instant_vector]
+    return_type: DOUBLE
+  # Ordering is an Output concern in the IR, so the resolver lifts these into
+  # Output.sort rather than making them a pipeline stage.
+  sort:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  sort_desc:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+
+  # --- Pipeline stages ------------------------------------------------------
+  # LogQL writes these as stages rather than calls, so its parser handles them
+  # as keywords in the same way PromQL's parser handles "sum". They appear here
+  # because the registry is what a validator consults to ask whether a target
+  # can express a given IR stage: ir_name is the DSL-neutral name the resolver
+  # puts on the FunctionStage, and its absence from promql.yaml is what makes a
+  # LogQL-to-PromQL translation of one of these honestly UNSUPPORTED.
+  json:
+    ir_name: parse_json
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  logfmt:
+    ir_name: parse_logfmt
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  regexp:
+    ir_name: parse_regexp
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  pattern:
+    ir_name: parse_pattern
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  unpack:
+    ir_name: parse_unpack
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  line_format:
+    ir_name: line_format
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  label_format:
+    ir_name: label_format
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  drop:
+    ir_name: drop_labels
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  keep:
+    ir_name: keep_labels
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  decolorize:
+    ir_name: decolorize
+    arity: 0
+    arg_types: []
+    return_type: log_stream
+  # The unwrap stage coerces a label's text into a number, which QLS
+  # §Attributes > Coercion/Casting into Metrics describes. The conversion
+  # functions it may wrap are listed below.
+  unwrap:
+    ir_name: unwrap
+    arity: 0
+    arg_types: []
+    return_type: DOUBLE
+
+  # --- Labels ---------------------------------------------------------------
+  label_replace:
+    arity: 5
+    arg_types: [instant_vector, string, string, string, string]
+    return_type: DOUBLE
+
+  # --- Unwrap conversions ---------------------------------------------------
+  # These appear only inside `| unwrap`, converting a label's text into a
+  # number before aggregation.
+  duration:
+    arity: 1
+    arg_types: [string]
+    return_type: INTERVAL
+  duration_seconds:
+    arity: 1
+    arg_types: [string]
+    return_type: DOUBLE
+  bytes:
+    arity: 1
+    arg_types: [string]
+    return_type: UNSIGNED_INT

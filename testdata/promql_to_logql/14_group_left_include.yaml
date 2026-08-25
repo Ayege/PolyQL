@@ -1,0 +1,13 @@
+name: 'group_left with copied labels'
+description: 'group_left(env) copies env from the one side onto the result.'
+source_dsl: promql
+target_dsl: logql
+input: 'a / on (job) group_left (env) b'
+expected_output: '{__name__="a"}'
+expected_fidelity_score: 0.7500
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].JoinStage'
+    flag: UNSUPPORTED
+notes: 'The IR keeps IncludeLabels even though LogQL cannot use them, so a later translation into a language that does have joins loses nothing.'

@@ -1,0 +1,17 @@
+name: 'avg over an unwrapped label'
+description: 'A parser stage and an unwrap feeding a temporal aggregation.'
+source_dsl: logql
+target_dsl: promql
+input: 'avg_over_time({app="frontend"} | json | unwrap duration [5m])'
+expected_output: 'avg_over_time({app="frontend"}[5m])'
+expected_fidelity_score: 0.7000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[1].FunctionStage'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[2].AggregationStage'
+    flag: FULL
+notes: 'The aggregation translates; the parser and the unwrap that produce its input do not, so the result is not usable without a metric that already carries the value.'

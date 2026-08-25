@@ -1,0 +1,13 @@
+name: 'vector matching join'
+description: 'PromQL pairs two vectors by label; LogQL cannot correlate two streams at all.'
+source_dsl: promql
+target_dsl: logql
+input: 'a / on (job) b'
+expected_output: '{__name__="a"}'
+expected_fidelity_score: 0.7500
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].JoinStage'
+    flag: UNSUPPORTED
+notes: 'LogQL has no join. Only the left-hand side is written, and the report says so.'

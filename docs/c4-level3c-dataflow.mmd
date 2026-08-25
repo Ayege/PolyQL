@@ -1,0 +1,79 @@
+flowchart TD
+    subgraph INPUT["Input layer"]
+        A1["PromQL text\nrate(http_req_total{status='500'}[5m])"]
+        A2["LogQL text\nrate({app='web'} |= 'error' [5m])"]
+        A3["TraceQL text\n{span.http.status = 500 && duration > 2s}"]
+    end
+
+    subgraph PARSE["1. Parse — per-DSL front end"]
+        B1["PromQL parser\n(Pratt parser)"]
+        B2["LogQL parser\n(Pratt parser)"]
+        B3["TraceQL parser\n(Pratt parser)"]
+    end
+
+    subgraph AST["2. DSL-specific AST"]
+        C1["PromQL AST\nVectorSelector, RangeVector,\nCall, AggregateExpr"]
+        C2["LogQL AST\nStreamSelector, PipelineStage,\nRangeAggregation"]
+        C3["TraceQL AST\nSpansetFilter, ScalarFilter,\nStructuralOp"]
+    end
+
+    subgraph RESOLVE["3. Resolve — DSL → IR mapping"]
+        D["Resolver + IR builder\n\nLooks up language registry for:\n• function name mapping\n• operator equivalence\n• type coercion (→ QLS types)\n• metric type mapping (→ QLS metric types)\n• aggregation scope (temporal vs group)"]
+    end
+
+    subgraph LANGREG["Language registry (YAML)"]
+        E1["promql.yaml\nfunctions, operators, types"]
+        E2["logql.yaml\nfunctions, operators, types"]
+        E3["traceql.yaml\nfunctions, operators, types"]
+    end
+
+    subgraph IR["4. Telemetry IR (shared model)"]
+        F["Query\n├─ SignalType: METRIC\n├─ DataSource: name, scope, selectors\n│  └─ LabelMatcher[]: key, op, value, values\n├─ Pipeline: stages[]\n│  ├─ FilterStage: predicate, returnsBool\n│  ├─ AggregationStage: op, groupBy, scope, parameter\n│  ├─ FunctionStage: name, args, returnType\n│  ├─ JoinStage: type, on, ignoring, include\n│  └─ BinaryOpStage: op, left, right\n└─ Output: timeRange, window,\n   subqueryRange, subqueryStep"]
+    end
+
+    subgraph VALIDATE["5. Validate"]
+        G["Semantic validator — target compatibility only\n\n(source arity and types were settled\nby the parser, which had the text)\n\n• Signal type the target queries\n• Function and aggregation availability\n• Join and subquery capability\n• Predicate operators\n  (QLS §Selection predicates)\n• Windowing alignment\n  (QLS §Time-based windowing)\n• NaN-versus-NULL sentinel semantics\n  (QLS §Aggregation math)\n• Sets TranslatabilityFlag per node:\n  FULL | PARTIAL | UNSUPPORTED"]
+    end
+
+    subgraph EMIT["6. Emit — per-DSL back end"]
+        H1["PromQL emitter\nIR → PromQL text"]
+        H2["LogQL emitter\nIR → LogQL text"]
+        H3["TraceQL emitter\nIR → TraceQL text"]
+    end
+
+    subgraph REPORT["7. Report"]
+        I["Fidelity reporter\n\nPer-node: path, type, flag, reason\nSummary: total, full, partial,\nunsupported, score (0.0–1.0)\nOutput: JSON, text, Markdown"]
+    end
+
+    subgraph OUTPUT["Output layer"]
+        J1["Translated query text\n(notes as # comment lines,\nso the result still parses)"]
+        J2["Fidelity report\n(JSON, text, Markdown)"]
+        J3["OTel span (OTLP)"]
+        J4["Translated Grafana dashboard\n(expressions only; every other\nfield preserved in place)"]
+    end
+
+    A1 --> B1
+    A2 --> B2
+    A3 --> B3
+    B1 --> C1
+    B2 --> C2
+    B3 --> C3
+    C1 --> D
+    C2 --> D
+    C3 --> D
+    E1 -.-> D
+    E2 -.-> D
+    E3 -.-> D
+    D --> F
+    F --> G
+    G --> H1
+    G --> H2
+    G --> H3
+    G -.-> I
+    H1 --> J1
+    H2 --> J1
+    H3 --> J1
+    I --> J2
+    J1 --> J4
+    I --> J4
+    G -.->|span| J3

@@ -1,0 +1,78 @@
+# Ignore SKILL file (local skill/private info)
+SKILL.md
+
+# Binaries for programs and build outputs
+/bin/
+/build/
+/dist/
+/out/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go specific
+*.test
+*.prof
+coverage.out
+*.coverprofile
+
+# Vendor (optional — uncomment if vendoring is used locally)
+/vendor/
+
+# Go build cache and modules (module files should be tracked)
+# GOPATH/bin if used locally
+GOPATH/bin/
+
+# Tooling caches
+.cache/
+.golangci-cache/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+*.sublime-workspace
+*.sublime-project
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log
+yarn-error.log
+
+# Environment variables and secrets
+.env
+.env.*
+.envrc
+*.secret
+secrets.*
+
+# Python artifacts (if present)
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node/npm
+node_modules/
+
+# Temporary files
+*.swp
+*~
+*.tmp
+tmp/
+
+# Coverage and report files
+coverage/
+coverage-report/
+
+# Misc
+Thumbs.db
+
+# Local binaries produced by 'go build' (common pattern)
+# Ignore compiled executables in root by name pattern
+*.out
+

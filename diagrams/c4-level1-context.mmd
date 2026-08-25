@@ -1,0 +1,26 @@
+C4Context
+    title PolyQL — C4 Level 1: System context
+
+    Person(sre, "SRE / DevOps engineer", "Migrates dashboards and alerts across observability backends")
+    Person(plat, "Platform engineer", "Federates queries across multi-backend stacks")
+
+    System(polyql, "PolyQL", "Bidirectional observability query translator and federation proxy. Parses DSL → shared telemetry IR (aligned to CNCF QLS semantic spec) → emits target DSL with fidelity report.")
+
+    System_Ext(grafana, "Grafana", "Dashboard JSON source — panels contain PromQL/LogQL/TraceQL expressions")
+    System_Ext(qlsspec, "CNCF QLS Spec", "Draft semantic specification defining data models for metrics, logs, spans, profiles")
+
+    System_Ext(prometheus, "Prometheus", "Metrics backend — PromQL")
+    System_Ext(loki, "Grafana Loki", "Log aggregation backend — LogQL")
+    System_Ext(tempo, "Grafana Tempo / Jaeger", "Tracing backend — TraceQL")
+    System_Ext(vendor, "Vendor backends", "NRQL, DQL, InfluxQL, etc.")
+
+    Rel(sre, polyql, "Translates queries", "CLI / dashboard batch")
+    Rel(plat, polyql, "Federates queries", "Proxy gRPC/HTTP")
+    Rel(grafana, polyql, "Exports dashboard JSON", "JSON API")
+    Rel(polyql, qlsspec, "IR aligns to", "Semantic model")
+    Rel(polyql, prometheus, "Sends translated PromQL", "PromQL HTTP API")
+    Rel(polyql, loki, "Sends translated LogQL", "LogQL HTTP API")
+    Rel(polyql, tempo, "Sends translated TraceQL", "Tempo gRPC/HTTP")
+    Rel(polyql, vendor, "Sends translated queries", "Vendor APIs")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

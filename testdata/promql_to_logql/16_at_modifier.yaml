@@ -1,0 +1,11 @@
+name: 'at modifier'
+description: 'An evaluation instant pinned with @.'
+source_dsl: promql
+target_dsl: logql
+input: 'rate(x[5m] @ 1609459200)'
+expected_output: 'rate({__name__="x"}[5m])'
+expected_fidelity_score: 0.8333
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: "LogQL cannot pin evaluation to an instant. The query is still written, but it will be answered over the caller's own time range — a difference that would be invisible without the note."

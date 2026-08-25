@@ -1,0 +1,20 @@
+# Sample queries for polyql translate --file.
+# Blank lines and lines beginning with # are skipped, so a file can carry notes.
+
+# Translates exactly into LogQL: rate over a window exists in both languages.
+rate(http_requests_total[5m])
+
+# Also exact: a group aggregation over a range aggregation.
+sum by (job) (rate(http_requests_total{status="500"}[5m]))
+
+# Approximate: PromQL's bool modifier returns 0/1, which LogQL cannot write.
+up > bool 5
+
+# Incomplete: LogQL has no histogram_quantile.
+histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+
+# Incomplete: LogQL has no join, so the vector matching cannot be expressed.
+sum(rate(a[5m])) / on (job) group_left (env) sum(rate(b[5m]))
+
+# Incomplete: LogQL has no subquery form.
+rate(http_requests_total[5m])[30m:1m]

@@ -1,0 +1,13 @@
+name: 'line filter with a literal dot'
+description: 'Containment over text that contains a regex metacharacter.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} |= "error.log"'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.7500
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FilterStage.Predicate'
+    flag: UNSUPPORTED
+notes: 'The IR names containment outright rather than lowering it to a regex, so the dot stays a dot. PromQL still has no log body to apply it to.'

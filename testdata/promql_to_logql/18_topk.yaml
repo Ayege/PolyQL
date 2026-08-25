@@ -1,0 +1,13 @@
+name: 'topk with a parameter'
+description: 'A parameterised group aggregation over a nested rate.'
+source_dsl: promql
+target_dsl: logql
+input: 'topk(5, sum by (job) (rate(x[5m])))'
+expected_output: 'topk(5, sum by (job) (rate({__name__="x"}[5m])))'
+expected_fidelity_score: 0.8750
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[2].AggregationStage'
+    flag: FULL
+notes: 'topk carries its k as an IR aggregation parameter, and both languages spell it the same way.'

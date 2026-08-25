@@ -1,0 +1,13 @@
+name: 'json parser stage'
+description: 'The commonest LogQL pipeline stage.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} | json'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.6667
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+notes: 'PromQL has no way to extract labels from a log line.'

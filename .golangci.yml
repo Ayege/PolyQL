@@ -1,0 +1,67 @@
+# Linters for PolyQL.
+#
+# A linter earns its place by catching a class of bug the tests cannot. Anything
+# about naming or layout is gofmt's job.
+#
+# This is the golangci-lint v1 configuration format, matching
+# golangci-lint-action@v6 in .github/workflows/ci.yml. Moving to v2 folds
+# gosimple and typecheck into staticcheck and adds a `version: "2"` key.
+
+run:
+  timeout: 5m
+
+linters:
+  disable-all: true
+  enable:
+    - govet        # suspicious constructs the compiler allows
+    - errcheck     # an ignored error is the commonest way a bug hides
+    - staticcheck  # correctness bugs and dead branches
+    - gosimple     # constructs with a plainer equivalent
+    - unused       # dead code, which drifts out of step with the live code
+    - ineffassign  # a value assigned and never read is usually a mistake
+    - typecheck    # the build itself, surfaced as a lint failure
+    - misspell     # typos in comments, which are the documentation
+    - gofmt        # formatting, enforced rather than requested
+    - goimports    # import grouping and ordering
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      # fieldalignment orders struct fields by size rather than by meaning. The
+      # IR nodes are grouped so that a reader can follow them — an Interval's
+      # value beside the text it was written as, a matcher's key beside its
+      # operator — and shuffling them to save a few bytes per node would cost
+      # more in comprehension than it saves in memory.
+      - fieldalignment
+      # shadow is still experimental in vet's own judgement and fires on the
+      # ordinary `if err := f(); err != nil` inside a function that already has
+      # an err. Worth revisiting deliberately rather than switching on blind.
+      - shadow
+
+  errcheck:
+    # A single-value type assertion panics on the wrong type. Every assertion in
+    # this codebase already uses the comma-ok form, and this keeps it that way.
+    check-type-assertions: true
+
+  misspell:
+    # No locale is set on purpose. This catches genuine typos; setting
+    # `locale: US` would additionally rewrite British spellings, of which the
+    # comments hold a great many, for no benefit.
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # A test may ignore an error that the assertion on the next line would catch
+    # anyway.
+    - path: _test\.go
+      linters:
+        - errcheck
+
+  # Deliberately not enabled:
+  #   exhaustive — every IR enum is switched on in several places, and some
+  #     switches handle a subset on purpose with a default for the rest. The
+  #     full node set is already pinned by TestInspectPathMatchesWalk and
+  #     TestTraversalIsComplete, which check the thing that matters rather than
+  #     the shape of the switch.

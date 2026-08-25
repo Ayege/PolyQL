@@ -1,0 +1,13 @@
+name: 'regex label matcher'
+description: 'A regex matcher alone, to isolate the dialect warning.'
+source_dsl: promql
+target_dsl: logql
+input: '{status=~"5.."}'
+expected_output: '{status=~"5.."}'
+expected_fidelity_score: 0.6000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Source.Selectors[0].Matchers[0]'
+    flag: PARTIAL
+notes: 'An approximation rather than a refusal: the pattern is written unchanged, but anchoring conventions differ, so the match set may not be identical.'

@@ -1,0 +1,17 @@
+name: 'multi-stage pipeline'
+description: 'A line filter, a parser, a label filter and a formatter in one query.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} |= "error" | json | level="error" | line_format "{{.message}}"'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.7143
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FilterStage.Predicate'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[1].FunctionStage'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[3].FunctionStage'
+    flag: UNSUPPORTED
+notes: 'Mixed verdicts across one pipeline: the report names each stage separately rather than rejecting the query wholesale.'

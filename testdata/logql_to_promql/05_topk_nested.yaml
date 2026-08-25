@@ -1,0 +1,13 @@
+name: 'topk over a grouped rate'
+description: 'Three aggregation levels, all of which PromQL has.'
+source_dsl: logql
+target_dsl: promql
+input: 'topk(10, sum by (status) (rate({app="web"}[5m])))'
+expected_output: 'topk(10, sum by (status) (rate({app="web"}[5m])))'
+expected_fidelity_score: 0.9000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[2].AggregationStage'
+    flag: FULL
+notes: 'The whole metric layer maps exactly; only the log signal does not.'

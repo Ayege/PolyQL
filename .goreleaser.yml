@@ -1,0 +1,84 @@
+# GoReleaser builds the release artefacts on a version tag.
+#
+# The language definitions are compiled into the binary, so every archive here is
+# self-contained: no directory to ship beside it, nothing to configure before the
+# first translation.
+version: 2
+
+project_name: polyql
+
+before:
+  hooks:
+    # The embedded definitions are generated from registry/, so regenerate them
+    # before building rather than trusting whatever is committed.
+    - go generate ./...
+    - go mod tidy
+
+builds:
+  - id: polyql
+    main: ./cmd/polyql
+    binary: polyql
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      # Windows on ARM is not a platform anyone has asked for yet.
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.buildDate={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: polyql
+    ids: [polyql]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - CONTRIBUTING.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?:'
+      order: 1
+    - title: Other changes
+      order: 99
+  filters:
+    exclude:
+      - '^docs(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - '^ci(\(.+\))?:'
+      - '^chore(\(.+\))?:'
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```sh
+    go install github.com/polyql/polyql/cmd/polyql@{{ .Tag }}
+    ```
+
+    Or download an archive above. The language definitions are compiled in, so
+    the binary runs with nothing beside it.

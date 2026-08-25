@@ -1,0 +1,13 @@
+name: 'max by over a rate'
+description: 'Covers the min/max family alongside sum and avg.'
+source_dsl: promql
+target_dsl: logql
+input: 'max by (job) (rate(x[5m]))'
+expected_output: 'max by (job) (rate({__name__="x"}[5m]))'
+expected_fidelity_score: 0.8333
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[1].AggregationStage'
+    flag: FULL
+notes: 'max exists on the group axis in both languages.'

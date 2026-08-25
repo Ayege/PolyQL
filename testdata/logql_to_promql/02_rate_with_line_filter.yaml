@@ -1,0 +1,15 @@
+name: 'rate over a filtered stream'
+description: 'A line filter inside a range aggregation.'
+source_dsl: logql
+target_dsl: promql
+input: 'rate({app="frontend"} |= "error" [5m])'
+expected_output: 'rate({app="frontend"}[5m])'
+expected_fidelity_score: 0.8000
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FilterStage.Predicate'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[1].AggregationStage'
+    flag: FULL
+notes: 'The rate translates; the line filter does not, because PromQL has no log body for it to address.'

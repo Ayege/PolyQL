@@ -1,0 +1,15 @@
+name: 'sum by over count_over_time'
+description: 'A group aggregation over a range aggregation.'
+source_dsl: logql
+target_dsl: promql
+input: 'sum by (level) (count_over_time({app="frontend"}[1h]))'
+expected_output: 'sum by (level) (count_over_time({app="frontend"}[1h]))'
+expected_fidelity_score: 0.8750
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].AggregationStage'
+    flag: FULL
+  - path: 'Query.Pipeline[1].AggregationStage'
+    flag: FULL
+notes: 'Both aggregations exist in PromQL on the same axes, so the metric layer is exact.'

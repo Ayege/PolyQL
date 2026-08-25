@@ -1,0 +1,13 @@
+name: 'comparison with the bool modifier'
+description: "PromQL's bool returns 0/1 for every series rather than filtering."
+source_dsl: promql
+target_dsl: logql
+input: 'up > bool 0'
+expected_output: '{__name__="up"} | value > 0'
+expected_fidelity_score: 0.6667
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FilterStage'
+    flag: PARTIAL
+notes: 'LogQL has no bool modifier, so the comparison is written as a filter: series failing it are dropped rather than returned as 0. A different result set, not a different spelling.'

@@ -1,0 +1,545 @@
+# PromQL language definition for PolyQL.
+#
+# This file tells the resolver how PromQL's vocabulary maps onto the QLS-aligned
+# telemetry IR. Adding a DSL to PolyQL means writing a file like this one plus a
+# parser/emitter pair; no core code changes.
+#
+# How a function maps to the IR
+# -----------------------------
+# Set `ir_kind` when the function IS one of the IR's aggregation operators. The
+# resolver then emits an AggregationStage, and `agg_scope` records which axis it
+# collapses:
+#
+#   TEMPORAL - collapses points within one series over time (rate, sum_over_time)
+#   GROUP    - collapses across series sharing attributes (sum by, topk)
+#
+# The scope is what keeps `sum` and `sum_over_time` apart: both are IR SUM, and
+# only the scope tells an emitter which one to write on the way back out.
+#
+# Omit `ir_kind` when the function has no IR aggregation equivalent. The resolver
+# then emits a FunctionStage named `ir_name` (defaulting to the key), and the
+# validator decides how faithfully the target DSL can express it. Omitting it is
+# the honest choice — claiming a false equivalence hides translation loss, which
+# is the one thing PolyQL must not do.
+#
+# Types may be written as a QLS type (DOUBLE, STRING, ...) or as one of this
+# DSL's own type names from `type_coercion` below.
+
+dsl: promql
+
+# PromQL queries metrics only.
+signal_types: [metric]
+
+capabilities:
+  # PromQL joins two instant vectors by matching labels, via on/ignoring with
+  # optional group_left/group_right.
+  joins: true
+  # Vector matching is an equi-join on labels. One-to-one matching is an inner
+  # join; group_left and group_right give the many-side semantics of an outer
+  # join, which is why LEFT_OUTER and RIGHT_OUTER are listed.
+  join_types: [INNER, LEFT_OUTER, RIGHT_OUTER]
+  subqueries: true
+  # PromQL nests its operations rather than chaining them, so a linearised IR
+  # pipeline can be emitted in any order.
+  pipeline_ordered: false
+  # PromQL windows normalise on UTC boundaries and offer no calendar alignment.
+  window_alignments: [UTC_NORMALIZED]
+  # PromQL writes "a > bool b" for a comparison returning 0 or 1.
+  bool_modifier: true
+
+aggregation_defaults:
+  # QLS §Aggregation: substitute 0 for NULL in addition and subtraction, 1 in
+  # multiplication, and 0 for a NULL divisor.
+  null_substitute_add: 0
+  null_substitute_mul: 1
+  null_substitute_div: 0
+  # PromQL uses NaN as the sentinel for missing data; QLS mandates NULL and
+  # reserves NaN for genuine mathematical errors. The resolver must convert the
+  # NaN-sentinel pattern into an IR NULL on the way in, and the emitter must
+  # convert it back on the way out.
+  nan_as_sentinel: true
+
+# The canonical form the PromQL parser renders back to when a query could have
+# been written more than one way. Emitters targeting PromQL produce these forms;
+# a round-trip test uses them to tell canonicalisation apart from translation
+# loss.
+normalizations:
+  # sum by (job) (foo), not sum(foo) by (job). PromQL accepts both.
+  aggregation_clause_position: before_operand
+  # Durations decompose into the largest units that divide them, so [7d] comes
+  # back as [1w].
+  duration_format: largest_unit
+  # Single-quoted and backquoted strings are re-emitted double-quoted.
+  string_quoting: double
+
+type_coercion:
+  instant_vector: DOUBLE
+  range_vector: DOUBLE
+  scalar: DOUBLE
+  string: STRING
+
+metric_types:
+  counter: CUMULATIVE_COUNTER
+  gauge: GAUGE
+  histogram: HISTOGRAM
+  summary: APPROXIMATE_DISTRIBUTION
+  # Prometheus exposes an explicit "untyped" for metrics whose TYPE comment is
+  # absent, which is exactly what the QLS default means.
+  untyped: UNKNOWN
+
+operators:
+  # Label matchers, written inside a selector's braces.
+  "=":  { ir_op: EQ,        context: selector }
+  "=~": { ir_op: REGEX,     context: selector }
+  "!~": { ir_op: NOT_REGEX, context: selector }
+  # "!=" is the one spelling PromQL uses in both places: as a label matcher
+  # inside braces and as a value comparison between expressions.
+  "!=": { ir_op: NEQ,       context: any }
+
+  # Value comparisons, written between expressions. PromQL spells equality "="
+  # in a selector and "==" in a comparison; both are IR EQ, and `context` is
+  # what lets an emitter choose the right spelling on the way back.
+  "==": { ir_op: EQ,  context: comparison }
+  ">":  { ir_op: GT,  context: comparison }
+  ">=": { ir_op: GTE, context: comparison }
+  "<":  { ir_op: LT,  context: comparison }
+  "<=": { ir_op: LTE, context: comparison }
+
+functions:
+  # --- Counter and rate functions over a range vector -----------------------
+  rate:
+    ir_kind: RATE
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  irate:
+    ir_kind: IRATE
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  increase:
+    ir_kind: INCREASE
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  delta:
+    ir_kind: DELTA
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  idelta:
+    # The instantaneous delta between the last two samples. IR DELTA is the
+    # closest operator; the difference in sampling is translation loss the
+    # validator reports.
+    ir_kind: DELTA
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+
+  # --- Aggregations over time (temporal axis) -------------------------------
+  sum_over_time:
+    ir_kind: SUM
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  avg_over_time:
+    ir_kind: AVG
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  min_over_time:
+    ir_kind: MIN
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  max_over_time:
+    ir_kind: MAX
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  count_over_time:
+    ir_kind: COUNT
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  stddev_over_time:
+    ir_kind: STDDEV
+    agg_scope: TEMPORAL
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  quantile_over_time:
+    ir_kind: QUANTILE
+    agg_scope: TEMPORAL
+    arity: 2
+    arg_types: [scalar, range_vector]
+    return_type: DOUBLE
+  # No IR aggregation operator corresponds to variance or to positional picks,
+  # so these stay functions.
+  stdvar_over_time:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  last_over_time:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  present_over_time:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  absent_over_time:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+
+  # --- Aggregation operators across series (group axis) ---------------------
+  # PromQL writes these as operators rather than calls, but they are named
+  # operations that map onto the IR the same way.
+  sum:
+    ir_kind: SUM
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  avg:
+    ir_kind: AVG
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  min:
+    ir_kind: MIN
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  max:
+    ir_kind: MAX
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  count:
+    ir_kind: COUNT
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  count_values:
+    ir_kind: COUNT_DISTINCT
+    agg_scope: GROUP
+    arity: 2
+    arg_types: [string, instant_vector]
+    return_type: DOUBLE
+  stddev:
+    ir_kind: STDDEV
+    agg_scope: GROUP
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  quantile:
+    ir_kind: QUANTILE
+    agg_scope: GROUP
+    arity: 2
+    arg_types: [scalar, instant_vector]
+    return_type: DOUBLE
+  topk:
+    ir_kind: TOPK
+    agg_scope: GROUP
+    arity: 2
+    arg_types: [scalar, instant_vector]
+    return_type: DOUBLE
+  bottomk:
+    ir_kind: BOTTOMK
+    agg_scope: GROUP
+    arity: 2
+    arg_types: [scalar, instant_vector]
+    return_type: DOUBLE
+  stdvar:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  group:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+
+  # --- Histograms -----------------------------------------------------------
+  histogram_quantile:
+    ir_kind: HISTOGRAM_QUANTILE
+    arity: 2
+    arg_types: [DOUBLE, instant_vector]
+    return_type: DOUBLE
+  histogram_count:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  histogram_sum:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  histogram_avg:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  histogram_fraction:
+    arity: 3
+    arg_types: [scalar, scalar, instant_vector]
+    return_type: DOUBLE
+
+  # --- Element-wise math ----------------------------------------------------
+  abs:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  ceil:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  floor:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  exp:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  ln:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  log2:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  log10:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  sqrt:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  sgn:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  round:
+    # The rounding step is optional.
+    arity: 2
+    variadic: 1
+    arg_types: [instant_vector, scalar]
+    return_type: DOUBLE
+  clamp:
+    arity: 3
+    arg_types: [instant_vector, scalar, scalar]
+    return_type: DOUBLE
+  clamp_max:
+    arity: 2
+    arg_types: [instant_vector, scalar]
+    return_type: DOUBLE
+  clamp_min:
+    arity: 2
+    arg_types: [instant_vector, scalar]
+    return_type: DOUBLE
+  changes:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  resets:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  deriv:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  predict_linear:
+    arity: 2
+    arg_types: [range_vector, scalar]
+    return_type: DOUBLE
+
+  # --- Labels, ordering and time -------------------------------------------
+  label_replace:
+    arity: 5
+    arg_types: [instant_vector, string, string, string, string]
+    return_type: DOUBLE
+  label_join:
+    # Takes one or more source labels after the separator.
+    arity: 4
+    variadic: -1
+    arg_types: [instant_vector, string, string, string]
+    return_type: DOUBLE
+  absent:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  scalar:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  vector:
+    arity: 1
+    arg_types: [scalar]
+    return_type: DOUBLE
+  timestamp:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: TIMESTAMP
+  time:
+    arity: 0
+    arg_types: []
+    return_type: TIMESTAMP
+  # Ordering is an Output concern in the IR rather than a pipeline stage, so
+  # these stay functions and the resolver lifts them into Output.sort.
+  sort:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  sort_desc:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  day_of_month:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  day_of_week:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  hour:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  minute:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  month:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  year:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+
+  # --- Trigonometric and angle functions ------------------------------------
+  # These have no IR aggregation equivalent, so each becomes a FunctionStage.
+  sin:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  cos:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  tan:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  asin:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  acos:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  atan:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  sinh:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  cosh:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  tanh:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  asinh:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  acosh:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  atanh:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  deg:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  rad:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  pi:
+    arity: 0
+    arg_types: []
+    return_type: DOUBLE
+
+  # --- Remaining range and histogram functions ------------------------------
+  mad_over_time:
+    arity: 1
+    arg_types: [range_vector]
+    return_type: DOUBLE
+  double_exponential_smoothing:
+    arity: 3
+    arg_types: [range_vector, scalar, scalar]
+    return_type: DOUBLE
+  histogram_stddev:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  histogram_stdvar:
+    arity: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  sort_by_label:
+    # Takes one or more label names to sort by.
+    arity: 2
+    variadic: -1
+    arg_types: [instant_vector, string]
+    return_type: DOUBLE
+  sort_by_label_desc:
+    arity: 2
+    variadic: -1
+    arg_types: [instant_vector, string]
+    return_type: DOUBLE
+  day_of_year:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE
+  days_in_month:
+    arity: 1
+    variadic: 1
+    arg_types: [instant_vector]
+    return_type: DOUBLE

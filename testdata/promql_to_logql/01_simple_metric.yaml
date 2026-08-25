@@ -1,0 +1,11 @@
+name: 'simple metric selector'
+description: 'A bare metric name, the smallest query there is.'
+source_dsl: promql
+target_dsl: logql
+input: 'up'
+expected_output: '{__name__="up"}'
+expected_fidelity_score: 0.6667
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+notes: 'A LogQL stream has no name, so the metric name becomes a __name__ matcher. The constructs translate, but the query as a whole does not: the two languages read different kinds of telemetry. The per-node flags show what survived.'

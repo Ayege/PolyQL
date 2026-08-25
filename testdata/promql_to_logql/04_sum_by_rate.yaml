@@ -1,0 +1,15 @@
+name: 'sum by over a rate'
+description: 'A group aggregation wrapping a temporal one — the shape most dashboards use.'
+source_dsl: promql
+target_dsl: logql
+input: 'sum by (job) (rate(http_requests_total[5m]))'
+expected_output: 'sum by (job) (rate({__name__="http_requests_total"}[5m]))'
+expected_fidelity_score: 0.8333
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].AggregationStage'
+    flag: FULL
+  - path: 'Query.Pipeline[1].AggregationStage'
+    flag: FULL
+notes: 'Both aggregations map exactly; the nesting flattens to an IR pipeline and back.'

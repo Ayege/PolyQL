@@ -1,0 +1,13 @@
+name: 'drop stage'
+description: 'Removing labels from the pipeline.'
+source_dsl: logql
+target_dsl: promql
+input: '{app="x"} | drop level'
+expected_output: '{app="x"}'
+expected_fidelity_score: 0.7143
+expected_flags:
+  - path: 'Query'
+    flag: UNSUPPORTED
+  - path: 'Query.Pipeline[0].FunctionStage'
+    flag: UNSUPPORTED
+notes: 'PromQL drops labels through aggregation rather than as a pipeline stage.'
