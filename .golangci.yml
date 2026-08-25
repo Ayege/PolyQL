@@ -45,8 +45,9 @@ linters-settings:
     check-type-assertions: true
 
   misspell:
-    misspell:
     locale: US
+    ignore-words:
+      - polyql
 
 issues:
   max-issues-per-linter: 0
