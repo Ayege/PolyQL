@@ -6,8 +6,6 @@ Translate observability queries across PromQL, LogQL, and vendor DSLs without lo
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-[![CI](https://github.com/ayege/polyql/actions/workflows/ci.yml/badge.svg)](https://github.com/ayege/polyql/actions/workflows/ci.yml)
-
 [![Go Report Card](https://goreportcard.com/badge/github.com/ayege/polyql)](https://goreportcard.com/report/github.com/ayege/polyql)
 
 [![Architecture](<https://img.shields.io/badge/Architecture-Clean%20Go%20%2B%20C4-059669?logo=diagramsdotnet&logoColor=white>)](docs/)
