@@ -123,4 +123,4 @@ jobs:
       - name: validate VHS tape compiles cleanly
         uses: charmbracelet/vhs-action@v2
         with:
-          tape: assets/demo.tape
+          path: assets/demo.tape   # Changed from 'tape' to 'path'

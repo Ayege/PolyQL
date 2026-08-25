@@ -45,9 +45,8 @@ linters-settings:
     check-type-assertions: true
 
   misspell:
-    # No locale is set on purpose. This catches genuine typos; setting
-    # `locale: US` would additionally rewrite British spellings, of which the
-    # comments hold a great many, for no benefit.
+    misspell:
+    locale: US
 
 issues:
   max-issues-per-linter: 0
