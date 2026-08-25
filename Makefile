@@ -25,7 +25,7 @@ test:
 	go test ./... -race -count=1
 
 lint:
-	golangci-lint run
+	golangci-lint run --skip-config-verify
 
 roundtrip:
 	go test ./pkg/compiler/ -run TestRoundTrip -v -count=1

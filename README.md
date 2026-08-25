@@ -2,10 +2,16 @@
 
 Translate observability queries across PromQL, LogQL, and vendor DSLs without losing the truth about what changed.
 
-[![Go](https://img.shields.io/github/go-mod/go-version/polyql/polyql)](go.mod)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/ayege/polyql)](go.mod)
+
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/polyql/polyql)](https://goreportcard.com/report/github.com/polyql/polyql)
-[![Codecov](https://codecov.io/gh/polyql/polyql/branch/main/graph/badge.svg)](https://codecov.io/gh/polyql/polyql)
+
+[![CI](https://github.com/ayege/polyql/actions/workflows/ci.yml/badge.svg)](https://github.com/ayege/polyql/actions/workflows/ci.yml)
+
+[![Go Report Card](https://goreportcard.com/badge/github.com/ayege/polyql)](https://goreportcard.com/report/github.com/ayege/polyql)
+
+[![Architecture](<https://img.shields.io/badge/Architecture-Clean%20Go%20%2B%20C4-059669?logo=diagramsdotnet&logoColor=white>)](docs/)
+
 
 <img src="assets/demo.gif" alt="PolyQL live translation demo" width="100%" />
 
