@@ -62,6 +62,12 @@ type writer struct {
 	def   *registry.DSLDefinition
 	reg   *registry.Registry
 	notes emitter.Notes
+	// offsetWritten records that a range aggregation carried the window's
+	// offset into the output. LogQL can only attach an offset to a range, so a
+	// query that never took one leaves it with nowhere to go — and dropping it
+	// unremarked would silently answer over a different period than was asked
+	// for, which is a change in results rather than in spelling.
+	offsetWritten bool
 }
 
 // rendered is an expression together with what phase of the language it is in.
@@ -99,7 +105,14 @@ func (w *writer) emitQuery(query *ir.Query) (string, error) {
 			"answered over the caller's own time range rather than at %s", bounds.Start)
 	}
 
-	expr, err := w.emitSource(query)
+	expr, deferred, err := w.emitSource(query)
+	if err != nil {
+		return "", err
+	}
+	// The deferred filters go immediately after the selector, before anything
+	// the pipeline adds: they narrow the same streams the braces do, and moving
+	// them past a parser or a formatter would change what they see.
+	expr, err = w.applyDeferredFilters(expr, deferred)
 	if err != nil {
 		return "", err
 	}
@@ -111,15 +124,36 @@ func (w *writer) emitQuery(query *ir.Query) (string, error) {
 		}
 	}
 
+	w.noteDroppedOffset(query)
+
 	// A log expression that never met a range aggregation is a plain log query,
 	// which is valid on its own.
 	return expr.text, nil
 }
 
+// noteDroppedOffset reports an offset that had nowhere to go.
+//
+// LogQL attaches an offset to a range — "[5m] offset 1h" — and has no bare
+// instant vector to attach one to. A PromQL "x offset 1h" therefore arrives with
+// an offset and no range to carry it, and saying nothing would present a query
+// answered over the wrong period as a clean translation.
+func (w *writer) noteDroppedOffset(query *ir.Query) {
+	if w.offsetWritten || query.Output == nil || query.Output.Window == nil {
+		return
+	}
+	if offset := query.Output.Window.Offset; !offset.IsZero() {
+		w.notes.Addf("UNSUPPORTED: LogQL attaches an offset to a range, and this query has none; "+
+			"the %s offset was dropped, so the result covers the caller's own time range "+
+			"rather than one shifted back by it", offset)
+	}
+}
+
 // emitSource renders the stream selector.
-func (w *writer) emitSource(query *ir.Query) (rendered, error) {
+// emitSource renders the stream selector, and returns any matchers that belong
+// after it as a label filter rather than inside its braces.
+func (w *writer) emitSource(query *ir.Query) (expr rendered, deferred []*ir.LabelMatcher, err error) {
 	if query.Source == nil {
-		return rendered{logPhase: false, atomic: true}, nil
+		return rendered{logPhase: false, atomic: true}, nil, nil
 	}
 
 	matchers := make([]*ir.LabelMatcher, 0, 4)
@@ -146,13 +180,12 @@ func (w *writer) emitSource(query *ir.Query) (rendered, error) {
 				spanset.Filters.String())
 		}
 		// A stream selector admits only =, !=, =~ and !~. An ordered comparison
-		// exists in LogQL but only as a label filter after a parser stage, and
-		// there is no parser here to put one after.
-		spellable, unspellable := emitter.SelectorSpellable(w.def, lowered)
-		for _, matcher := range unspellable {
-			w.notes.Addf("UNSUPPORTED: a LogQL stream selector cannot compare with %s; the filter "+
-				"on %q was left out", matcher.Op.Symbol(), matcher.Key)
-		}
+		// is still writable, just not there: LogQL takes one as a label filter
+		// stage after the selector, and a label filter reads stream labels
+		// without needing a parser first. Those matchers are carried out of here
+		// and appended as a stage rather than dropped.
+		var spellable []*ir.LabelMatcher
+		spellable, deferred = emitter.SelectorSpellable(w.def, lowered)
 		matchers = append(matchers, spellable...)
 	}
 
@@ -164,7 +197,7 @@ func (w *writer) emitSource(query *ir.Query) (rendered, error) {
 		}
 		text, err := w.matcherText(matcher, registry.OperatorContextSelector)
 		if err != nil {
-			return rendered{}, err
+			return rendered{}, nil, err
 		}
 		parts = append(parts, text)
 	}
@@ -174,13 +207,50 @@ func (w *writer) emitSource(query *ir.Query) (rendered, error) {
 		// write.
 		w.notes.Addf("UNSUPPORTED: the query selects no stream labels, and a LogQL selector " +
 			"needs at least one matcher")
-		return rendered{logPhase: true, atomic: true}, nil
+		return rendered{logPhase: true, atomic: true}, deferred, nil
 	}
 	// LogQL's canonical rendering separates matchers with a comma and a space.
 	return rendered{
 		text:     "{" + strings.Join(parts, ", ") + "}",
 		logPhase: true,
 		atomic:   true,
+	}, deferred, nil
+}
+
+// applyDeferredFilters writes the matchers a stream selector could not hold as a
+// label filter stage immediately after it.
+//
+// "{a=\"b\"} | duration > 100ms" is what a comparison arriving from a span query
+// becomes. Writing it is the difference between a translation that keeps the
+// filter and one that quietly returns more rows than were asked for.
+func (w *writer) applyDeferredFilters(expr rendered, deferred []*ir.LabelMatcher) (rendered, error) {
+	if len(deferred) == 0 {
+		return expr, nil
+	}
+	if !expr.logPhase || expr.text == "" {
+		// With no selector to hang it on there is no pipeline to append to, and
+		// the selector itself was already reported as unwritable.
+		for _, matcher := range deferred {
+			w.notes.Addf("UNSUPPORTED: the filter on %q could not be written, since the query "+
+				"has no stream selector to append a label filter to", matcher.Key)
+		}
+		return expr, nil
+	}
+
+	parts := make([]string, 0, len(deferred))
+	for _, matcher := range deferred {
+		text, err := w.labelFilterText(matcher)
+		if err != nil {
+			return expr, err
+		}
+		parts = append(parts, text)
+	}
+	// LogQL joins several predicates in one label filter stage with "and".
+	return rendered{
+		text:      expr.text + " | " + strings.Join(parts, " and "),
+		logPhase:  true,
+		pipelined: true,
+		atomic:    true,
 	}, nil
 }
 
@@ -642,9 +712,10 @@ func (w *writer) labelFilterText(m *ir.LabelMatcher) (string, error) {
 	}
 
 	if isOrderedComparison(m.Op) {
-		return m.Key + " " + symbol + " " + m.Value, nil
+		return w.labelName(m.Key) + " " + symbol + " " + m.Value, nil
 	}
-	return m.Key + symbol + emitter.QuoteString(m.Value, w.def.Normalizations.StringQuoting), nil
+	return w.labelName(m.Key) + symbol +
+		emitter.QuoteString(m.Value, w.def.Normalizations.StringQuoting), nil
 }
 
 // isOrderedComparison reports whether an operator compares magnitude, which only
@@ -738,6 +809,7 @@ func (w *writer) offsetSuffix(query *ir.Query) string {
 	if query.Output == nil || query.Output.Window == nil || query.Output.Window.Offset.IsZero() {
 		return ""
 	}
+	w.offsetWritten = true
 	return " offset " + emitter.FormatDuration(query.Output.Window.Offset,
 		w.def.Normalizations.DurationFormat)
 }

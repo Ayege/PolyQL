@@ -11,9 +11,10 @@ diagrams. This document is the other half: what each gap is, what it would take
 to close it, and which decisions have to be made by a person before the work can
 start.
 
-**Two of the five are now closed** — stdin input and Grafana API input — and the
-diagrams were updated the same day, which is the whole point. `docs/diagrams_test.go`
-now enforces that: it fails when a component marked planned has since been built.
+**Four of the five are now closed.** Only the vendor DSLs remain, and those are a
+community extension point rather than central work. The diagrams were updated
+alongside each closure — `docs/diagrams_test.go` enforces it, and caught every
+one of them.
 
 ## How this audit was done
 
@@ -32,8 +33,8 @@ Each claim in each diagram was checked against the tree, not against memory:
 
 | # | Gap | Promised by | Exists today | Size |
 | - | --- | ----------- | ------------ | ---- |
-| 1 | Federation proxy | L1, L2 | `cmd/polyql-proxy/`, `pkg/proxy/` — both empty but for `.gitkeep` | **L** |
-| 2 | OTel exporter | L2, L3c | nothing; the module has no OTel dependency | **M** |
+| ~~1~~ | ~~Federation proxy~~ | L1, L2 | **DONE** — `polyql-proxy`, fail-closed, responses passed through | ~~L~~ |
+| ~~2~~ | ~~OTel exporter~~ | L2, L3c | **DONE** — one span per translation, no-op without a collector | ~~M~~ |
 | ~~3~~ | ~~Grafana HTTP API input~~ | L1, L2 | **DONE** — `--grafana-url` with `--dashboard-uid`, token from `GRAFANA_TOKEN` | ~~S~~ |
 | 4 | Vendor DSLs (NRQL, DQL, InfluxQL) | L1 | none; the registry is the ready extension point | **M** each |
 | ~~5~~ | ~~stdin input for `translate`~~ | README, CLI reference | **DONE** — a bare pipe, or `--file -` | ~~XS~~ |
@@ -54,83 +55,77 @@ this pass:
 
 ---
 
-## 1. Federation proxy — size L
+## 1. Translating proxy — DONE
 
-**Promised:** L1 shows a platform engineer federating queries over "Proxy
-gRPC/HTTP", and PolyQL sending translated queries on to Prometheus, Loki and
-Tempo. L2 gives it a container with a PromQL-compatible `/api/v1/query`.
+`cmd/polyql-proxy` in front of `pkg/proxy`. The backends' own endpoints, so a
+client needs its address changed and nothing else:
 
-**Exists:** nothing. `cmd/polyql-proxy/` and `pkg/proxy/` have contained only
-`.gitkeep` since the initial commit. Nothing in the module imports `net/http`.
+```sh
+polyql-proxy --source-dsl promql --to-dsl logql --upstream http://loki:3100
+```
 
-**Why it is the big one:** every other gap is additive. This one introduces a
-network surface, a configuration model, an upstream failure mode and a
-long-running process — none of which the codebase has today. The compiler
-library is already shaped for it (`Emitter` and `Parser` both document that
-implementations must be safe for concurrent use because "the federation proxy
-shares one registered emitter across requests"), so the translation half is
-ready. The serving half is not.
+The three decisions this was blocked on, and what was chosen:
 
-### Plan
+- **Lossy queries fail closed.** A query the target cannot fully express returns
+  400 with the fidelity report as the body, and never reaches the backend.
+  `--allow-partial` opts out per deployment. The gate is *completeness*, not
+  losslessness: an approximation was written and explained, so it still asks the
+  same question and is forwarded either way. Only an unsupported construct —
+  something that was not written at all — is refused.
+- **Responses pass through untouched.** The body is the upstream's own, in its
+  own shape. Translating results is a second compiler roughly the size of the
+  first; reshaping a few fields to look like one would be worse than not having
+  it. The README says so plainly rather than leaving it to be discovered.
+- **Configuration is flags.** One route per process. A config file naming several
+  upstreams is a larger surface and nobody has asked for it.
 
-**Phase 1 — `pkg/proxy`, transport-free.** A `Translator` that takes
-`(sourceDSL, targetDSL, queryText)` and returns the translated text plus the
-fidelity report, wrapping the existing pipeline. No HTTP. Fully unit-testable,
-and it forces the lossy-translation decision below to be made in one place.
+Two things fell out of building it that are worth recording:
 
-**Phase 2 — read-only HTTP, one backend pair.** `cmd/polyql-proxy` serving
-Prometheus' `/api/v1/query` and `/api/v1/query_range`, translating the `query`
-parameter and forwarding to a configured Loki upstream. Responses pass through
-untouched (see the open decision). `httptest`-based tests; no live backend.
+- **The policy lives in `Translator`, with no transport.** That is what makes the
+  fail-closed decision testable without a server, and what stops it being
+  re-derived slightly differently in each handler.
+- **Grafana sends long queries in a form body, not the URL.** Reading only the
+  URL would have passed exactly the queries most likely to be lossy straight
+  through untranslated. Both are read, and a re-encoded form gets a corrected
+  `Content-Length` — a stale one truncates it.
 
-**Phase 3 — the other backends.** Loki's `/loki/api/v1/query_range` and Tempo's
-`/api/search`. Tempo needs its own attention: TraceQL carries its time range in
-request parameters rather than in the query text, so the proxy is the component
-that has to move `start` and `end` across — which is exactly what the TraceQL
-emitter's notes tell the caller to do today.
-
-**Phase 4 — operability.** Health and readiness endpoints, a fidelity metric per
-request, graceful shutdown, and the Dockerfile/goreleaser entries (both currently
-build only `polyql`).
-
-### Decisions needed first
-
-- **What happens when a translation is lossy?** This is the product question, not
-  an implementation detail. Fail closed with a 400, or forward the query and
-  return the fidelity report in a response header? A tool whose stated purpose is
-  refusing to hide loss probably fails closed by default with an explicit
-  `--allow-partial`, but that is the maintainer's call.
-- **Are responses translated too, or only queries?** Prometheus and Loki return
-  different JSON shapes, so a genuinely transparent proxy would have to translate
-  results as well — a second compiler, roughly the size of the first. Passing
-  responses through is the honest v1, and the README should say so plainly.
-- **How is a backend configured?** Flags for a single pair are enough for Phase 2;
-  a config file naming several upstreams is a bigger surface and can wait.
+Still open: gRPC (the diagrams once said "gRPC + HTTP"; only HTTP is built, and
+L2 now says so), several upstreams in one process, and response translation.
 
 ---
 
-## 2. OTel exporter — size M
+## 2. OTel exporter — DONE
 
-**Promised:** L2 gives it a container emitting a span per translation with source
-DSL, target DSL, IR node count, fidelity score and latency. L3c shows it as an
-output of the validate stage.
+One span per translation, named `compiler.Translate`, carrying the source and
+target languages, IR node count, fidelity score, the per-verdict counts and
+whether the signal class mismatched.
 
-**Exists:** nothing, and no dependency. Adding one matters more than usual here:
-`go.mod` currently has exactly two direct dependencies, and the single static
-binary with the registry compiled in is a stated design property. The OTel SDK is
-a large tree.
+```sh
+polyql --otlp-endpoint http://collector:4318 translate --from promql --to logql --query up
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318   # the standard variable also works
+```
 
-### Plan
+The dependency question resolved differently from how the first draft of this
+document framed it. **The stated design property is "single static binary, no
+external files at runtime" — that is about runtime, not dependency count**, and
+adding the SDK does not touch it. So the SDK went in directly.
 
-1. Define a tiny `Observer` interface in the compiler package — `TranslationDone(source, target string, nodes int, score float64, d time.Duration)` — with a no-op default. The compiler depends on the interface, never on OTel.
-2. Put the OTel implementation in its own package, `pkg/telemetry/otel`, imported only by the commands.
-3. Wire it behind a flag (`--otlp-endpoint`), off by default.
+What did matter was *where*:
 
-Keeping the dependency out of the library is the whole point: a project offering
-itself as an embeddable translation layer should not force an OTel SDK on
-everything that imports it.
+- **The library imports the OTel API, never the SDK.** Without a provider
+  installed, `otel.Tracer` returns a no-op, so an embedder importing
+  `pkg/compiler` pays nothing and configures nothing. `pkg/telemetry` is the only
+  package that imports the SDK, and only the commands import it.
+- **A lossy translation is a successful span.** Marking it an error would make
+  every honest fidelity report look like a broken request. Only a translation
+  that could not run at all sets an error status.
+- **The proxy continues an incoming trace** rather than starting its own, so a
+  translation is one hop in the caller's trace.
+- **The SDK's own failures are routed**, not left on the standard logger — this
+  command keeps stderr readable next to a piped stdout.
 
----
+An unreachable collector never interrupts a translation: the failure is reported
+and carried past.
 
 ## 3. Grafana HTTP API input — DONE
 
@@ -206,28 +201,28 @@ itself.
 
 ---
 
-## Suggested order
+## Where things stand
 
 1. ~~**stdin** (XS)~~ — **done**.
 2. ~~**Grafana API input** (S)~~ — **done**.
-3. **OTel exporter** (M) — blocked on a dependency decision, below.
-4. **Proxy phases 1–2** (L) — blocked on the two decisions under G1.
-5. **Proxy phases 3–4**, then vendor DSLs as they arrive.
+3. ~~**OTel exporter** (M)~~ — **done**.
+4. ~~**Proxy** (L)~~ — **done**, HTTP only.
+5. **Vendor DSLs** — open, and deliberately a community extension point.
 
-### What the next two are waiting on
+### What building these changed elsewhere
 
-Neither remaining gap is blocked on effort. Both are blocked on a call that is
-not the implementer's to make:
+Two structural changes came out of the work rather than being planned:
 
-- **OTel:** adding the SDK takes `go.mod` from two direct dependencies to a large
-  tree, against a stated design property of shipping one static binary with the
-  registry compiled in. The `Observer` seam described above costs nothing and
-  keeps the dependency out of the library — but building the seam with no
-  exporter behind it is scaffolding, so it is worth doing *with* the decision
-  rather than before it.
-- **Proxy:** fail closed or forward-with-a-header on a lossy translation, and
-  whether responses are translated at all. Both change what the component *is*,
-  not how it is built.
+- **`pkg/compiler.Translate` now exists.** Nothing assembled the pipeline in one
+  place; the CLI, the dashboard translator and the corpus test each rebuilt
+  parse → resolve → validate → emit. The proxy needed a transport-free
+  translation and the OTel work needed a single instrumentation point, and both
+  wanted the same function. Every caller now drives it, including the corpus —
+  a suite that exercised its own private copy would pass while the shipped path
+  broke.
+- **`net/http` moved the vulnerability floor twice.** Grafana input took
+  `govulncheck` from 0 to 12 findings; the toolchain went 1.25.8 → 1.25.13 to
+  clear them. Worth expecting on any future work that opens a socket.
 
 ## Keeping this honest — DONE
 

@@ -20,6 +20,7 @@ LDFLAGS  = -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.bui
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/polyql ./cmd/polyql/
+	go build -ldflags "$(LDFLAGS)" -o bin/polyql-proxy ./cmd/polyql-proxy/
 
 test:
 	go test ./... -race -count=1
@@ -50,3 +51,4 @@ clean:
 
 install:
 	go install -ldflags "$(LDFLAGS)" ./cmd/polyql/
+	go install -ldflags "$(LDFLAGS)" ./cmd/polyql-proxy/

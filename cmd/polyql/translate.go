@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -10,12 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/polyql/polyql/pkg/compiler/emitter"
+	"github.com/polyql/polyql/pkg/compiler"
 	"github.com/polyql/polyql/pkg/compiler/fidelity"
-	"github.com/polyql/polyql/pkg/compiler/ir"
-	"github.com/polyql/polyql/pkg/compiler/parser"
-	"github.com/polyql/polyql/pkg/compiler/resolver"
-	"github.com/polyql/polyql/pkg/compiler/validator"
 	"github.com/polyql/polyql/pkg/registry"
 )
 
@@ -123,10 +120,11 @@ func (t *translateOptions) run() error {
 		return err
 	}
 
+	ctx := context.Background()
 	results := make([]Result, 0, len(queries))
 	worst := exitOK
 	for _, query := range queries {
-		result, code := t.translateOne(query, reg)
+		result, code := t.translateOne(ctx, query, reg)
 		results = append(results, result)
 		if code > worst {
 			worst = code
@@ -180,22 +178,11 @@ func (t *translateOptions) validateFlags() error {
 	return nil
 }
 
-// checkLanguages verifies that both languages have a definition, a parser and an
-// emitter, naming what is available when one does not.
+// checkLanguages fails on an unusable language pair before any query runs, so a
+// typo in --to is reported once rather than once per query.
 func (t *translateOptions) checkLanguages(reg *registry.Registry) error {
-	if _, err := reg.Get(t.from); err != nil {
-		return fatalf("unknown source language %q (available: %s)", t.from, strings.Join(reg.List(), ", "))
-	}
-	if _, err := reg.Get(t.to); err != nil {
-		return fatalf("unknown target language %q (available: %s)", t.to, strings.Join(reg.List(), ", "))
-	}
-	if _, err := parser.Get(t.from); err != nil {
-		return fatalf("no parser for %q (this binary can read: %s)",
-			t.from, strings.Join(parser.List(), ", "))
-	}
-	if _, err := emitter.Get(t.to); err != nil {
-		return fatalf("no emitter for %q (this binary can write: %s)",
-			t.to, strings.Join(emitter.List(), ", "))
+	if err := compiler.CheckLanguages(t.from, t.to, reg); err != nil {
+		return fatalf("%s", err)
 	}
 	return nil
 }
@@ -273,7 +260,11 @@ func (t *translateOptions) inputStream() (io.Reader, string, func(), error) {
 
 // translateOne runs the pipeline over one query and reports the exit code it
 // earned.
-func (t *translateOptions) translateOne(query string, reg *registry.Registry) (Result, int) {
+//
+// The pipeline itself lives in pkg/compiler, so that this command, the proxy and
+// the dashboard translator drive one sequence rather than three copies of it.
+// What stays here is policy: which outcomes are worth a non-zero exit.
+func (t *translateOptions) translateOne(ctx context.Context, query string, reg *registry.Registry) (Result, int) {
 	result := Result{
 		SourceDSL: strings.ToLower(t.from),
 		TargetDSL: strings.ToLower(t.to),
@@ -281,43 +272,22 @@ func (t *translateOptions) translateOne(query string, reg *registry.Registry) (R
 		Notes:     []string{},
 	}
 
-	p, _ := parser.Get(t.from)
-	node, err := p.Parse(query)
+	translated, err := compiler.Translate(ctx, compiler.Request{
+		SourceDSL: t.from,
+		TargetDSL: t.to,
+		Query:     query,
+		Registry:  reg,
+	})
 	if err != nil {
 		result.Error = err.Error()
 		return result, exitError
 	}
 
-	resolved, err := resolver.Resolve(node, t.from, reg)
-	if err != nil {
-		result.Error = err.Error()
-		return result, exitError
-	}
-	t.debugf("resolved %q to %d IR nodes", query, countNodes(resolved))
+	result.Output = translated.Output
+	result.Notes = translated.Notes
+	result.Fidelity = translated.Report
 
-	_, issues, mismatch := validator.Validate(resolved, t.to, reg)
-
-	e, _ := emitter.Get(t.to)
-	text, err := e.Emit(resolved, reg)
-	if err != nil {
-		result.Error = err.Error()
-		return result, exitError
-	}
-
-	// The emitter writes its notes as comment lines above the query. Splitting
-	// them out gives the JSON format structured notes and the query-only format
-	// a bare query.
-	result.Notes, result.Output = splitNotes(text)
-
-	// A node can draw more than one verdict and keeps only the worst, so the
-	// validator's list is handed over to recover the rest.
-	findings := make([]fidelity.Finding, 0, len(issues))
-	for _, issue := range issues {
-		findings = append(findings, fidelity.Finding{
-			Path: issue.Path, Flag: issue.Flag, Reason: issue.Reason,
-		})
-	}
-	result.Fidelity = fidelity.GenerateWithIssues(resolved, findings, t.from, t.to, mismatch)
+	t.debugf("resolved %q to %d IR nodes", query, translated.Report.TotalNodes)
 	t.debugf("fidelity %.2f (%d full, %d partial, %d unsupported)",
 		result.Fidelity.FidelityScore, result.Fidelity.FullCount,
 		result.Fidelity.PartialCount, result.Fidelity.UnsupportedCount)
@@ -340,29 +310,6 @@ func (t *translateOptions) exitCodeFor(report *fidelity.Report) int {
 		return exitFidelity
 	}
 	return exitOK
-}
-
-// splitNotes separates the emitter's leading comment lines from the query.
-func splitNotes(text string) (notes []string, query string) {
-	notes = []string{}
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "#") {
-			notes = append(notes, strings.TrimSpace(strings.TrimPrefix(line, "#")))
-			continue
-		}
-		return notes, strings.Join(lines[i:], "\n")
-	}
-	return notes, ""
-}
-
-func countNodes(query *ir.Query) int {
-	count := 0
-	ir.Inspect(query, func(ir.Node) bool {
-		count++
-		return true
-	})
-	return count
 }
 
 func plural(n int) string {

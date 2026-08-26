@@ -1109,12 +1109,38 @@ func TestSpansetFilterCompatibility(t *testing.T) {
 		}
 	})
 
-	t.Run("a disjunction cannot be written at all", func(t *testing.T) {
+	t.Run("a disjunction over one attribute folds to set membership", func(t *testing.T) {
+		// Several alternatives for a single attribute are not a general
+		// disjunction: they are what the IR's IN predicate means, and every
+		// conjunctive target writes one as an anchored regex alternation.
 		spanset := &ir.SpansetSelector{Filters: &ir.LogicalPredicate{
 			Op: ir.LogicalOr,
 			Operands: []ir.Predicate{
 				spanMatch("service", ir.MatchEQ, "web"),
 				spanMatch("service", ir.MatchEQ, "api"),
+			},
+		}}
+		query := &ir.Query{
+			Signal: ir.SignalSpan,
+			Source: &ir.DataSource{Spanset: spanset},
+			Output: &ir.Output{},
+			Hints:  map[string]string{ir.HintSourceDSL: "traceql"},
+		}
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		assertFlag(t, spanset, ir.TranslatabilityFull)
+		if _, ok := findIssue(issues, "implicit \"and\""); ok {
+			t.Errorf("a foldable disjunction should not be reported: %v", issues)
+		}
+	})
+
+	t.Run("a disjunction across two attributes cannot be written at all", func(t *testing.T) {
+		spanset := &ir.SpansetSelector{Filters: &ir.LogicalPredicate{
+			Op: ir.LogicalOr,
+			Operands: []ir.Predicate{
+				spanMatch("service", ir.MatchEQ, "web"),
+				spanMatch("region", ir.MatchEQ, "eu"),
 			},
 		}}
 		query := &ir.Query{
@@ -1155,13 +1181,28 @@ func TestSpansetFilterCompatibility(t *testing.T) {
 		assertNoIssues(t, issues)
 	})
 
-	t.Run("an ordered comparison has no selector form", func(t *testing.T) {
-		// LogQL has ">", but only as a label filter after a parser stage. A
-		// stream selector takes =, !=, =~ and !~ and nothing else, so writing
-		// this into the braces would produce text that does not parse.
+	t.Run("an ordered comparison moves to a label filter where there is one", func(t *testing.T) {
+		// A LogQL stream selector takes =, !=, =~ and !~ and nothing else, so
+		// the comparison cannot go between the braces — but it is still
+		// writable, as a label filter stage after them. The emitter moves it
+		// there, so reporting it lost would put the score at odds with the
+		// output.
 		query := spanBuilder("traceql", spanMatch("duration", ir.MatchGT, "100ms")).build()
 
 		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		if _, ok := findIssue(issues, "inside a selector"); ok {
+			t.Errorf("LogQL has label filters, so this is writable: %v", issues)
+		}
+	})
+
+	t.Run("a target with no label filters still reports it", func(t *testing.T) {
+		// PromQL's ordered comparisons operate on a series' value rather than a
+		// label, so there is no stage to move this to and nothing can be
+		// written.
+		query := spanBuilder("traceql", spanMatch("duration", ir.MatchGT, "100ms")).build()
+
+		_, issues, _ := Validate(query, "promql", testRegistry(t))
 
 		if _, ok := findIssue(issues, "inside a selector"); !ok {
 			t.Errorf("expected a selector-context issue, got %v", issues)

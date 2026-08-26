@@ -19,7 +19,7 @@ Go 1.25 or later. No other tooling is needed to build or test;
 ## How to contribute
 
 Fork, branch, open a pull request. Small pull requests get reviewed faster than
-large ones, and a pull request that changes behaviour and formatting at once is
+large ones, and a pull request that changes behavior and formatting at once is
 hard to review at all — please split them.
 
 If you are planning something substantial, open an issue first. That is not
@@ -98,6 +98,8 @@ to say so**:
 | `scoped_attributes` | `false` | Attributes are addressed through an explicit scope prefix rather than one flat namespace. |
 | `metric_extraction` | `false` | The language derives numbers from records that are not numbers. |
 | `group_aggregation_needs_samples` | `false` | Your group aggregations reduce a sample stream rather than the records themselves. LogQL's do — `sum({app="x"})` is not a query, because a stream selector yields lines and `sum` reduces samples. |
+| `label_filters` | `false` | Your language can filter on an attribute *outside* the selector, as a later stage. LogQL can: `{app="x"} \| duration > 100ms` compares a label the braces have no operator for. PromQL cannot — its ordered comparisons act on a series' value, not a label. |
+| `offset_needs_range` | `false` | An offset only attaches to a range. LogQL writes `[5m] offset 1h` and has no bare instant vector to attach one to; PromQL attaches one to a selector directly. |
 | `structural_ops` | *(empty)* | The language relates records by their position in a trace tree. |
 
 `group_aggregation_needs_samples` is worth dwelling on, because getting it wrong
@@ -108,6 +110,27 @@ translation exact — while your emitter, reaching the same stage with raw log
 lines in hand, drops it. The report then claims full fidelity for a query that
 lost its aggregation. Set the flag and the validator reads the pipeline as a
 whole instead, so the score and the emitted text tell the same story.
+
+#### One lowering worth knowing about
+
+Not every construct a target "cannot express" is actually lost. Two lowerings run
+in the emitters, and each turns a refusal into an exact translation:
+
+- **A disjunction over one attribute is set membership.** `a = "x" || a = "y"`
+  has no form between conjunctive braces — but it is not a general disjunction,
+  it is the IR's `IN` predicate, which every target here already writes as an
+  anchored regex alternation. `ir.FoldSameKeyDisjunction` recognises it. The fold
+  is faithful only because both conditions hold: the target anchors a label regex
+  end to end, and the values are escaped on the way out. A target that anchored
+  differently would need this reconsidered.
+- **A comparison the selector cannot spell may belong after it.** With
+  `label_filters` set, an ordered comparison is moved into a filter stage rather
+  than dropped.
+
+Both are applied by the emitter *and* recognised by the validator, through the
+same function. That is not incidental: a validator calling something unsupported
+while the emitter wrote it puts the score and the output at odds, which is the
+one failure a fidelity report must never have.
 
 #### The other two operator tables
 
@@ -137,7 +160,7 @@ spelling — or spelled with no capability — is rejected at load, since either
 half alone would let the validator promise a translation the emitter cannot
 write. `registry/traceql.yaml` is the worked example for all of this.
 
-Loading is strict — an unknown key or an unrecognised IR symbol fails with the
+Loading is strict — an unknown key or an unrecognized IR symbol fails with the
 file and field named. Check your file before writing any Go:
 
 ```sh

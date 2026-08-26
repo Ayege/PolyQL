@@ -204,8 +204,16 @@ func ConjunctiveMatchers(predicate ir.Predicate) ([]*ir.LabelMatcher, bool) {
 		return []*ir.LabelMatcher{node.Matcher}, true
 
 	case *ir.LogicalPredicate:
+		if node.Op == ir.LogicalOr {
+			// One shape of disjunction does survive: several alternatives for
+			// the same attribute are set membership, which every target here
+			// writes as an anchored regex alternation.
+			if matcher, ok := ir.FoldSameKeyDisjunction(node); ok {
+				return []*ir.LabelMatcher{matcher}, true
+			}
+		}
 		if node.Op != ir.LogicalAnd {
-			// An OR or a NOT has no conjunctive form at all, so nothing from
+			// Anything else has no conjunctive form at all, so nothing from
 			// this subtree may be kept: half a disjunction is a different query.
 			return nil, false
 		}

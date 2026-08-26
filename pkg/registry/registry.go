@@ -326,6 +326,23 @@ type Capabilities struct {
 	// AttributeCasts reports whether the DSL can reinterpret an attribute's
 	// type — TraceQL's "as (span.x: int)". It defaults to false.
 	AttributeCasts bool
+	// OffsetNeedsRange reports whether the DSL can only shift a query back in
+	// time when a range is present.
+	//
+	// LogQL writes an offset onto a range — "[5m] offset 1h" — and has no bare
+	// instant vector to attach one to, so a query with no range aggregation has
+	// nowhere to put it. PromQL attaches an offset to a selector directly. It
+	// defaults to false.
+	OffsetNeedsRange bool
+	// LabelFilters reports whether the DSL can filter on an attribute outside
+	// its selector, as a later pipeline stage.
+	//
+	// LogQL can: "{app=\"x\"} | duration > 100ms" compares a label that the
+	// selector's braces have no operator for, and it needs no parser first.
+	// PromQL cannot — its ordered comparisons operate on a series' value, not on
+	// a label — so a comparison arriving from a span query is writable in one
+	// and not the other, and only this tells them apart. It defaults to false.
+	LabelFilters bool
 	// GroupAggregationNeedsSamples reports whether the DSL's group aggregations
 	// consume a sample stream rather than the records themselves.
 	//

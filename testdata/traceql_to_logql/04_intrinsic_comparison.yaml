@@ -1,12 +1,17 @@
-name: duration intrinsic into a stream selector
-description: An ordered comparison, which LogQL admits only after a parser stage.
+name: duration intrinsic as a label filter
+description: An ordered comparison, moved out of the braces into a filter stage.
 source_dsl: traceql
 target_dsl: logql
 input: '{resource.service.name = "web" && duration > 100ms}'
-expected_output: '{resource_service_name="web"}'
+expected_output: '{resource_service_name="web"} | duration > 100ms'
 notes: >
-  LogQL has ">", but only as a label filter after a parser stage; a stream
-  selector takes =, !=, =~ and !~ and nothing else. Writing the comparison into
-  the braces anyway would produce text that fails to parse, which is the one
-  outcome this corpus exists to prevent — so the matcher is dropped and
-  reported, and the service-name matcher still carries.
+  A LogQL stream selector takes =, !=, =~ and !~ and nothing else, so the
+  comparison cannot go between the braces. It is still writable, just not there:
+  LogQL takes an ordered comparison as a label filter stage after the selector,
+  and a label filter reads stream labels without needing a parser first. Moving
+  it is the difference between a translation that keeps the filter and one that
+  quietly returns every duration.
+  PromQL has no such stage — its ordered comparisons operate on a series' value
+  rather than a label — which is why the same query into PromQL still reports the
+  filter as lost. The registry's label_filters capability is what tells them
+  apart.

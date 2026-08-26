@@ -33,9 +33,24 @@ builds:
       - -X main.buildDate={{ .Date }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  - id: polyql-proxy
+    main: ./cmd/polyql-proxy
+    binary: polyql-proxy
+    env:
+      - CGO_ENABLED=0
+    # The proxy is a server, so it ships only for the platforms one runs on.
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.buildDate={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   - id: polyql
-    ids: [polyql]
+    ids: [polyql, polyql-proxy]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     formats: [tar.gz]

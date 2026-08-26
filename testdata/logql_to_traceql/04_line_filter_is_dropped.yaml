@@ -1,0 +1,15 @@
+name: line filter into traceql
+description: A test over the log body, which a span has nothing to match against.
+source_dsl: logql
+target_dsl: traceql
+input: '{app="web"} |= "error"'
+expected_output: '{ .app = "web" }'
+expected_flags:
+  - path: 'Query.Pipeline[0].FilterStage.Predicate'
+    flag: UNSUPPORTED
+notes: >
+  A line filter tests the whole log line and a span has no line. This used to be
+  written as ".body =~ \".*error.*\"" — valid TraceQL against an attribute spans
+  do not have, so it could only ever match nothing while reading like a working
+  filter. Dropping it and reporting it is what every other target does with a
+  construct it cannot express, and the stream label beside it still survives.

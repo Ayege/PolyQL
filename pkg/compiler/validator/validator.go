@@ -216,6 +216,7 @@ func (v *validator) walk(root *ir.Query, path string) {
 			// must follow the ordering pass, which may have moved the very
 			// stages it counts.
 			v.checkAggregationOperand(n, path)
+			v.checkOffset(n, path)
 
 		case *ir.LabelMatcher:
 			// A matcher inside a selector is flagged in its own right; one
@@ -307,6 +308,15 @@ func (v *validator) checkSpanset(spanset *ir.SpansetSelector, path string) {
 		if v.target.SupportsIROpInContext(op, registry.OperatorContextSelector) {
 			return true
 		}
+		// An operator the selector cannot spell may still be writable as a
+		// label filter after it, which is how LogQL takes an ordered
+		// comparison. The emitter moves it there rather than dropping it, so
+		// calling it unsupported here would put the score at odds with the
+		// output.
+		if v.target.Capabilities.LabelFilters &&
+			v.target.SupportsIROpInContext(op, registry.OperatorContextComparison) {
+			return true
+		}
 		v.report(matcher, path, ir.TranslatabilityUnsupported,
 			fmt.Sprintf("%s cannot compare with %s inside a selector, so the filter on %q "+
 				"cannot be written", v.targetDSL, matcher.Op.Symbol(), matcher.Key),
@@ -315,13 +325,25 @@ func (v *validator) checkSpanset(spanset *ir.SpansetSelector, path string) {
 	})
 }
 
-// isConjunctive reports whether a predicate tree is a pure AND of comparisons,
-// which is the only shape a conjunctive selector can hold.
+// isConjunctive reports whether a predicate tree is a shape a conjunctive
+// selector can hold.
+//
+// That is a pure AND of comparisons, plus one exception: a disjunction over a
+// single attribute is set membership, which every conjunctive target writes as
+// an anchored regex alternation. The exception is tested with the same function
+// the emitters fold with, so the two cannot disagree — a validator calling this
+// unsupported while the emitter wrote it would put the score and the output at
+// odds, which is the failure the fidelity report exists to prevent.
 func isConjunctive(predicate ir.Predicate) bool {
 	switch node := predicate.(type) {
 	case *ir.MatchPredicate:
 		return true
 	case *ir.LogicalPredicate:
+		if node.Op == ir.LogicalOr {
+			if _, foldable := ir.FoldSameKeyDisjunction(node); foldable {
+				return true
+			}
+		}
 		if node.Op != ir.LogicalAnd {
 			return false
 		}
@@ -512,6 +534,54 @@ func (v *validator) checkAggregationOperand(query *ir.Query, path string) {
 			}
 		}
 	}
+}
+
+// checkOffset covers an offset the target has nowhere to put.
+//
+// LogQL attaches one to a range, and has no bare instant vector to attach it to,
+// so a PromQL "x offset 1h" arrives with an offset and no range to carry it.
+// Dropping it unremarked would present a query answered over the wrong period as
+// a clean translation — a difference in results, not in spelling.
+func (v *validator) checkOffset(query *ir.Query, path string) {
+	if !v.target.Capabilities.OffsetNeedsRange {
+		return
+	}
+	if query.Output == nil || query.Output.Window == nil {
+		return
+	}
+	window := query.Output.Window
+	if window.Offset.IsZero() || v.producesRange(query) {
+		return
+	}
+	v.report(window, path+".Output.Window", ir.TranslatabilityUnsupported,
+		fmt.Sprintf("%s attaches an offset to a range, and this query has none; the %s offset "+
+			"cannot be written, so the result would cover the caller's own time range rather "+
+			"than one shifted back by it", v.targetDSL, window.Offset),
+		window.Offset.String())
+}
+
+// producesRange reports whether anything in the pipeline narrows the source to a
+// window, which is what an offset and a group aggregation both need.
+//
+// A temporal aggregation does. So does a function the target declares as
+// consuming a range — LogQL's bytes_rate has no IR aggregation operator but is
+// still a range aggregation, and the registry says so through the argument type
+// it takes.
+func (v *validator) producesRange(query *ir.Query) bool {
+	rangeTypes := v.target.RangeOperandTypes()
+	for _, stage := range query.Pipeline {
+		switch node := stage.(type) {
+		case *ir.AggregationStage:
+			if node.Scope == ir.AggScopeTemporal {
+				return true
+			}
+		case *ir.FunctionStage:
+			if fn, ok := v.target.FunctionByIRName(node.Name); ok && fn.ReadsRangeOperand(rangeTypes) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // checkJoin covers a target that cannot correlate two result sets.

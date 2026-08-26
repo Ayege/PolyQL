@@ -36,6 +36,16 @@ capabilities:
   # turn lines into samples first. Saying so is what stops the validator scoring
   # a translated "sum(metric)" as fully translated while the emitter drops it.
   group_aggregation_needs_samples: true
+  # A label filter stage compares an attribute the stream selector's braces have
+  # no operator for: "{app=\"x\"} | duration > 100ms". It needs no parser first,
+  # so a comparison arriving from a span query is writable here even though the
+  # braces themselves take only =, !=, =~ and !~.
+  label_filters: true
+  # An offset attaches to a range — "[5m] offset 1h" — and LogQL has no bare
+  # instant vector to attach one to. A query carrying an offset but no range
+  # aggregation therefore cannot express it, and would otherwise answer over the
+  # caller's own period rather than one shifted back.
+  offset_needs_range: true
 
 aggregation_defaults:
   # QLS §Aggregation, same as every DSL.
@@ -56,7 +66,7 @@ normalizations:
   # Durations keep the units they were written with: [90m] stays [90m] rather
   # than becoming [1h30m]. LogQL admits fractional durations such as 1.5h, which
   # have no single largest-unit spelling, and rewriting a user's units makes a
-  # translated query harder to recognise.
+  # translated query harder to recognize.
   duration_format: verbatim
   # Single-quoted and backquoted strings are re-emitted double-quoted. Note that
   # templates are conventionally written with backticks in hand-authored LogQL,

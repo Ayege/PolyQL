@@ -185,7 +185,9 @@ func (w *writer) emitSource(query *ir.Query) (rendered, error) {
 			if err != nil {
 				return expr, err
 			}
-			expr.filters = append(expr.filters, text)
+			if text != "" {
+				expr.filters = append(expr.filters, text)
+			}
 		}
 	}
 
@@ -253,6 +255,10 @@ func (w *writer) applyFilter(expr rendered, stage *ir.FilterStage) (rendered, er
 	text, err := w.predicateText(stage.Predicate, false)
 	if err != nil {
 		return expr, err
+	}
+	if text == "" {
+		// Nothing survived the lowering, and the reason was already noted.
+		return expr, nil
 	}
 
 	if expr.closed {
@@ -436,6 +442,17 @@ func (w *writer) predicateText(predicate ir.Predicate, grouped bool) (string, er
 		if node.Matcher == nil {
 			return "", fmt.Errorf("traceql: a match predicate carries no matcher")
 		}
+		// A predicate over the log body has nothing to address here: a span has
+		// no line. Writing it against an invented attribute would produce valid
+		// TraceQL that can only ever match nothing, which reads as a working
+		// filter — so it is dropped and reported, the same way every other
+		// target drops what it cannot express.
+		if node.Matcher.Key == ir.FieldBody {
+			w.notes.Addf("UNSUPPORTED: a span has no log line to filter on; the %s test on the "+
+				"body was dropped rather than written against an attribute that does not exist",
+				strings.ToLower(node.Matcher.Op.String()))
+			return "", nil
+		}
 		return w.matcherText(node.Matcher)
 
 	case *ir.LogicalPredicate:
@@ -461,6 +478,9 @@ func (w *writer) logicalText(node *ir.LogicalPredicate, grouped bool) (string, e
 		if err != nil {
 			return "", err
 		}
+		if inner == "" {
+			return "", nil
+		}
 		// A negation binds tightly, so its operand is always parenthesised
 		// rather than relying on the reader to know the precedence.
 		return op.Symbol + "(" + inner + ")", nil
@@ -472,7 +492,16 @@ func (w *writer) logicalText(node *ir.LogicalPredicate, grouped bool) (string, e
 		if err != nil {
 			return "", err
 		}
+		// A dropped operand leaves nothing to join. Under an AND the rest still
+		// narrows correctly; under an OR it would widen, which the validator
+		// has already reported on the predicate itself.
+		if text == "" {
+			continue
+		}
 		parts = append(parts, text)
+	}
+	if len(parts) == 0 {
+		return "", nil
 	}
 	joined := strings.Join(parts, " "+op.Symbol+" ")
 	if grouped && len(parts) > 1 {

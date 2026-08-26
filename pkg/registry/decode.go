@@ -88,6 +88,8 @@ type rawCapabilities struct {
 	ScopedAttributes *bool    `yaml:"scoped_attributes"`
 	BooleanSelectors *bool    `yaml:"boolean_selectors"`
 	AttributeCasts   *bool    `yaml:"attribute_casts"`
+	LabelFilters     *bool    `yaml:"label_filters"`
+	OffsetNeedsRange *bool    `yaml:"offset_needs_range"`
 
 	GroupAggregationNeedsSamples *bool    `yaml:"group_aggregation_needs_samples"`
 	StructuralOps                []string `yaml:"structural_ops"`
@@ -247,6 +249,12 @@ func parseDefinition(data []byte, path string) (*DSLDefinition, error) {
 		}
 		if caps.AttributeCasts != nil {
 			def.Capabilities.AttributeCasts = *caps.AttributeCasts
+		}
+		if caps.LabelFilters != nil {
+			def.Capabilities.LabelFilters = *caps.LabelFilters
+		}
+		if caps.OffsetNeedsRange != nil {
+			def.Capabilities.OffsetNeedsRange = *caps.OffsetNeedsRange
 		}
 		if caps.GroupAggregationNeedsSamples != nil {
 			def.Capabilities.GroupAggregationNeedsSamples = *caps.GroupAggregationNeedsSamples

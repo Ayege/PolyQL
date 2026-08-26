@@ -540,3 +540,84 @@ func TestEmitRejectsBadInput(t *testing.T) {
 		t.Error("expected an error for a nil registry")
 	}
 }
+
+// TestLogBodyFilterIsDroppedNotInvented covers a predicate that has nothing to
+// address in a span.
+//
+// A log line filter arriving from LogQL used to be written as ".body =~ ..." —
+// valid TraceQL against an attribute spans do not have, so it could only ever
+// match nothing while reading like a working filter. Dropping it and saying so
+// is what every other target does with a construct it cannot express.
+func TestLogBodyFilterIsDroppedNotInvented(t *testing.T) {
+	for _, op := range []ir.MatchOp{ir.MatchContains, ir.MatchRegex, ir.MatchNotContains} {
+		t.Run(op.String(), func(t *testing.T) {
+			query := &ir.Query{
+				Signal: ir.SignalLog,
+				Source: &ir.DataSource{Selectors: []*ir.Selector{{
+					Matchers: []*ir.LabelMatcher{{Key: "app", Op: ir.MatchEQ, Value: "web"}},
+				}}},
+				Pipeline: ir.Pipeline{
+					&ir.FilterStage{Predicate: match(ir.FieldBody, op, "err")},
+				},
+				Output: &ir.Output{},
+			}
+
+			text, notes := emit(t, query)
+
+			if strings.Contains(text, "body") {
+				t.Errorf("text = %q, want no filter on an attribute spans do not have", text)
+			}
+			// What did survive must still be there: dropping the body test is
+			// not a reason to lose the stream label beside it.
+			if !strings.Contains(text, `.app = "web"`) {
+				t.Errorf("text = %q, want the other matcher kept", text)
+			}
+			assertNote(t, notes, "no log line to filter on")
+			assertParses(t, text)
+		})
+	}
+
+	t.Run("a body test under a conjunction leaves the rest", func(t *testing.T) {
+		query := &ir.Query{
+			Signal: ir.SignalLog,
+			Source: &ir.DataSource{Scope: ir.ScopeSpan, Spanset: &ir.SpansetSelector{
+				Filters: logical(ir.LogicalAnd,
+					match("span.a", ir.MatchEQ, "1"),
+					match(ir.FieldBody, ir.MatchContains, "err"),
+				),
+			}},
+			Output: &ir.Output{},
+		}
+
+		text, notes := emit(t, query)
+
+		if strings.Contains(text, "body") {
+			t.Errorf("text = %q, want the body test gone", text)
+		}
+		if !strings.Contains(text, "span.a = 1") {
+			t.Errorf("text = %q, want the other conjunct kept", text)
+		}
+		assertNote(t, notes, "no log line to filter on")
+		assertParses(t, text)
+	})
+
+	t.Run("a query that was only a body test writes nothing but says why", func(t *testing.T) {
+		query := &ir.Query{
+			Signal: ir.SignalLog,
+			Source: &ir.DataSource{Scope: ir.ScopeSpan, Spanset: &ir.SpansetSelector{
+				Filters: match(ir.FieldBody, ir.MatchContains, "err"),
+			}},
+			Output: &ir.Output{},
+		}
+
+		text, notes := emit(t, query)
+
+		// An empty span set selects everything, which is wider than was asked —
+		// so the note is the whole of the honesty here.
+		if got := text; got != "{}" {
+			t.Errorf("text = %q, want the empty selector", got)
+		}
+		assertNote(t, notes, "no log line to filter on")
+		assertParses(t, text)
+	})
+}

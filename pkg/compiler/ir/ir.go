@@ -1599,6 +1599,76 @@ const (
 	FieldValue = "value"
 )
 
+// FoldSameKeyDisjunction rewrites a disjunction over one attribute as a single
+// set-membership matcher, and reports whether it could.
+//
+// "service = web OR service = api" is not a general disjunction: it is a list of
+// alternatives for one attribute, which is exactly what the IR's IN predicate
+// means and what every target here already writes as an anchored regex
+// alternation. Recognizing it turns a query a conjunctive selector would
+// otherwise refuse outright into one it writes exactly.
+//
+// The rewrite is faithful rather than approximate, and only because both
+// conditions hold: PromQL and LogQL anchor a label regex end to end, so the
+// alternation matches whole values and nothing wider; and the values are escaped
+// on the way out, so a dot in one stays a dot. A target that anchored differently
+// would need this reconsidered.
+//
+// Nothing else folds. A disjunction across two different attributes has no
+// selector form at all, and pretending otherwise would silently widen the query.
+func FoldSameKeyDisjunction(predicate Predicate) (*LabelMatcher, bool) {
+	node, ok := predicate.(*LogicalPredicate)
+	if !ok || node.Op != LogicalOr || len(node.Operands) < 2 {
+		return nil, false
+	}
+
+	key := ""
+	var values []string
+	// The resolver builds a disjunction as nested binary nodes, so "a OR b OR c"
+	// arrives as a tree rather than a flat list; the walk flattens it.
+	var collect func(Predicate) bool
+	collect = func(p Predicate) bool {
+		switch operand := p.(type) {
+		case *MatchPredicate:
+			m := operand.Matcher
+			// Only plain equality folds. An operand that is itself a set, a
+			// pattern or a negation would change what the alternation means.
+			if m == nil || m.Op != MatchEQ || len(m.Values) > 0 {
+				return false
+			}
+			if key == "" {
+				key = m.Key
+			} else if m.Key != key {
+				return false
+			}
+			values = append(values, m.Value)
+			return true
+		case *LogicalPredicate:
+			if operand.Op != LogicalOr {
+				return false
+			}
+			for _, nested := range operand.Operands {
+				if !collect(nested) {
+					return false
+				}
+			}
+			return true
+		default:
+			return false
+		}
+	}
+
+	for _, operand := range node.Operands {
+		if !collect(operand) {
+			return nil, false
+		}
+	}
+	if key == "" || len(values) < 2 {
+		return nil, false
+	}
+	return &LabelMatcher{Key: key, Op: MatchIn, Values: values}, true
+}
+
 // flatNameUnsafe matches the characters a single-namespace label name may not
 // contain. PromQL and LogQL both accept [a-zA-Z_][a-zA-Z0-9_]* and nothing else.
 var flatNameUnsafe = regexp.MustCompile(`[^a-zA-Z0-9_]`)

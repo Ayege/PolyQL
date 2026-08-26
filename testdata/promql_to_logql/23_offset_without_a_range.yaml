@@ -1,0 +1,16 @@
+name: 'offset with no range to carry it'
+description: 'A PromQL instant-vector offset, which LogQL has nowhere to attach.'
+source_dsl: promql
+target_dsl: logql
+input: 'http_requests_total offset 1h'
+expected_output: '{__name__="http_requests_total"}'
+expected_flags:
+  - path: 'Query.Output.Window'
+    flag: UNSUPPORTED
+notes: >
+  LogQL writes an offset onto a range — "[5m] offset 1h" — and has no bare
+  instant vector to attach one to, so this query arrives with an offset and
+  nothing to carry it. It used to be dropped in silence, which presented a query
+  answered over the caller's own period as a clean translation: a difference in
+  results, not in spelling. Compare 09_offset.yaml, where a range aggregation is
+  present and the offset survives untouched.

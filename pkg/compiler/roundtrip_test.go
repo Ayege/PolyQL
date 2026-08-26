@@ -1,6 +1,7 @@
 package compiler_test
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -11,12 +12,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/polyql/polyql/pkg/compiler/emitter"
+	"github.com/polyql/polyql/pkg/compiler"
 	"github.com/polyql/polyql/pkg/compiler/fidelity"
 	"github.com/polyql/polyql/pkg/compiler/ir"
 	"github.com/polyql/polyql/pkg/compiler/parser"
 	"github.com/polyql/polyql/pkg/compiler/resolver"
-	"github.com/polyql/polyql/pkg/compiler/validator"
 	"github.com/polyql/polyql/pkg/registry"
 
 	_ "github.com/polyql/polyql/pkg/compiler/emitter/logql"
@@ -158,62 +158,53 @@ type translation struct {
 	report *fidelity.Report
 }
 
-// translate runs the whole pipeline over one query.
+// translate runs the whole pipeline over one query, through the same facade the
+// CLI and the proxy use. Driving the real entry point is the point: a corpus
+// that exercised its own private copy would pass while the shipped path broke.
 func translate(reg *registry.Registry, sourceDSL, query, targetDSL string) (*translation, error) {
-	p, err := parser.Get(sourceDSL)
+	result, err := compiler.Translate(context.Background(), compiler.Request{
+		SourceDSL: sourceDSL,
+		TargetDSL: targetDSL,
+		Query:     query,
+		Registry:  reg,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("no parser for %s: %w", sourceDSL, err)
+		return nil, err
 	}
-	node, err := p.Parse(query)
-	if err != nil {
-		return nil, fmt.Errorf("parsing: %w", err)
-	}
-
-	resolved, err := resolver.Resolve(node, sourceDSL, reg)
-	if err != nil {
-		return nil, fmt.Errorf("resolving: %w", err)
-	}
-	// The resolver decides nothing about fidelity, so the tree it hands over
-	// must be untouched. A flag here would mean a verdict reached too early.
-	if worst, _ := ir.WorstTranslatability(resolved); worst != ir.TranslatabilityFull {
-		return nil, fmt.Errorf("the resolver produced a tree already flagged %s", worst)
-	}
-
-	_, issues, mismatch := validator.Validate(resolved, targetDSL, reg)
-
-	e, err := emitter.Get(targetDSL)
-	if err != nil {
-		return nil, fmt.Errorf("no emitter for %s: %w", targetDSL, err)
-	}
-	text, err := e.Emit(resolved, reg)
-	if err != nil {
-		return nil, fmt.Errorf("emitting: %w", err)
-	}
-
-	findings := make([]fidelity.Finding, 0, len(issues))
-	for _, issue := range issues {
-		findings = append(findings, fidelity.Finding{
-			Path: issue.Path, Flag: issue.Flag, Reason: issue.Reason,
-		})
+	// The resolver decides nothing about fidelity, so a flag it left behind
+	// would mean a verdict reached too early. That has to be checked against a
+	// freshly resolved tree, since Translate hands back a validated one.
+	if err := assertResolverIsNeutral(reg, sourceDSL, query); err != nil {
+		return nil, err
 	}
 
 	return &translation{
-		query:  resolved,
-		text:   text,
-		output: queryLine(text),
-		report: fidelity.GenerateWithIssues(resolved, findings, sourceDSL, targetDSL, mismatch),
+		query:  result.Query,
+		text:   result.Text,
+		output: result.Output,
+		report: result.Report,
 	}, nil
 }
 
-// queryLine strips the emitter's leading comment lines, leaving the query.
-func queryLine(text string) string {
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-	for i, line := range lines {
-		if !strings.HasPrefix(line, "#") {
-			return strings.Join(lines[i:], "\n")
-		}
+// assertResolverIsNeutral re-runs parse and resolve alone and checks that the
+// tree arrives unflagged.
+func assertResolverIsNeutral(reg *registry.Registry, sourceDSL, query string) error {
+	p, err := parser.Get(sourceDSL)
+	if err != nil {
+		return fmt.Errorf("no parser for %s: %w", sourceDSL, err)
 	}
-	return ""
+	node, err := p.Parse(query)
+	if err != nil {
+		return fmt.Errorf("parsing: %w", err)
+	}
+	resolved, err := resolver.Resolve(node, sourceDSL, reg)
+	if err != nil {
+		return fmt.Errorf("resolving: %w", err)
+	}
+	if worst, _ := ir.WorstTranslatability(resolved); worst != ir.TranslatabilityFull {
+		return fmt.Errorf("the resolver produced a tree already flagged %s", worst)
+	}
+	return nil
 }
 
 // normalizeQuery collapses whitespace so a comparison is about the query rather

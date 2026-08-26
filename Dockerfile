@@ -15,14 +15,21 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 
+ARG LDFLAGS="-s -w"
+
 RUN CGO_ENABLED=0 go build \
       -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
       -o /polyql ./cmd/polyql
 
+RUN CGO_ENABLED=0 go build \
+      -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
+      -o /polyql-proxy ./cmd/polyql-proxy
+
 FROM alpine:3.20
 
-# Certificates are here for the federation proxy, which will need to reach
-# backends over TLS. The translator itself makes no network calls.
+# Certificates are here for the proxy, which reaches backends over TLS, and for
+# the dashboard translator fetching from a Grafana instance. The CLI translating
+# a local query makes no network calls at all.
 RUN apk --no-cache add ca-certificates
 
 # A translator has no reason to run as root.
@@ -30,6 +37,7 @@ RUN adduser -D -u 10001 polyql
 USER 10001
 
 COPY --from=builder /polyql /usr/local/bin/polyql
+COPY --from=builder /polyql-proxy /usr/local/bin/polyql-proxy
 
 ENTRYPOINT ["polyql"]
 CMD ["--help"]

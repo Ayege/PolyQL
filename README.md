@@ -21,6 +21,8 @@ Translate observability queries across PromQL, LogQL, and vendor DSLs without lo
 - [Installation](#installation)
 - [Supported DSLs](#supported-dsls)
 - [CLI reference](#cli-reference)
+- [Translating proxy](#translating-proxy)
+- [Observability](#observability)
 - [Fidelity reporting](#fidelity-reporting)
 - [Architecture](#architecture)
 - [Extending PolyQL](#extending-polyql)
@@ -152,6 +154,7 @@ PolyQL exposes a small command surface for interactive use and automation:
 | `polyql registry validate`  | Check that a directory of language definitions loads    |
 | `polyql registry diff`      | Compare a directory of definitions against the built-in set |
 | `polyql version`            | Print build info and the languages this binary supports |
+| `polyql-proxy`              | Translate queries in flight and forward them to a backend — see [Translating proxy](#translating-proxy) |
 
 Global flags, available on every command:
 
@@ -159,6 +162,7 @@ Global flags, available on every command:
 | ------------------ | ----------------------------------------------------------------- |
 | `--registry-dir`   | Load language definitions from a directory instead of the compiled-in set |
 | `-v`, `--verbose`  | Log timing and translation detail to stderr                       |
+| `--otlp-endpoint`  | Export a trace span per translation to an OTLP/HTTP collector      |
 
 Exit codes are the CLI's contract with a shell script or CI job — they distinguish "the translation lost something" from "the command couldn't run at all":
 
@@ -169,6 +173,43 @@ Exit codes are the CLI's contract with a shell script or CI job — they disting
 | `2`  | The command couldn't run — a query that wouldn't parse, a registry that wouldn't load, an unknown language |
 
 For the full flag set on any command, run `polyql <command> --help`.
+
+## Translating proxy
+
+`polyql-proxy` translates queries in flight. Point a tool that speaks one language at it, give it a backend that speaks another, and the endpoints are the backends' own — a client already configured for Prometheus, Loki or Tempo needs its address changed and nothing else.
+
+```bash
+# A Prometheus-speaking client, a Loki backend.
+polyql-proxy --source-dsl promql --to-dsl logql --upstream http://loki:3100
+```
+
+Two behaviors are worth stating plainly, because both are deliberate:
+
+**It fails closed.** A query the target cannot fully express is refused with `400` and the fidelity report as the body — not forwarded. A proxy that silently ran a half-translated query would return data that looks right and is not, which is the failure this project exists to prevent. `--allow-partial` opts out per deployment; an *approximation* (written and explained) is forwarded either way, since it still asks the same question.
+
+**Responses pass through untouched.** What comes back is the upstream's own body in the upstream's own shape — Prometheus and Loki return different JSON, and your client must expect the target's format. Translating results would be a second compiler roughly the size of the first; reshaping a few fields to look like one would be worse than not having it.
+
+Every translated response carries what it cost:
+
+| Header | Meaning |
+| ------ | ------- |
+| `X-Polyql-Fidelity-Score` | The score, `0.0`–`1.0` |
+| `X-Polyql-Notes` | How many things the translation could not express exactly |
+| `X-Polyql-Translated-Query` | The query actually sent upstream |
+
+`/healthz` and `/readyz` answer without touching the backend, so a proxy that is fine does not report itself unhealthy when the thing behind it blips.
+
+## Observability
+
+PolyQL emits one OpenTelemetry span per translation, carrying the source and target languages, the IR node count, the fidelity score, the per-verdict counts and whether the signal class mismatched:
+
+```bash
+polyql --otlp-endpoint http://collector:4318 translate --from promql --to logql --query 'up'
+# or the standard variable:
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+```
+
+With no endpoint configured, **no provider is installed at all** — the library instruments against the OTel API, which is a no-op without one. An embedder importing `pkg/compiler` pays nothing and configures nothing. The proxy continues an incoming trace rather than starting its own, so a translation is one hop in the caller's trace.
 
 ## Fidelity reporting
 
@@ -200,7 +241,7 @@ The three flags are `FULL`, `PARTIAL`, and `UNSUPPORTED`. A score measures struc
 
 PolyQL follows a six-stage compiler pipeline: Parse → AST → Resolve → IR → Validate → Emit. The full C4 diagrams live in [docs/](docs/) and the IR model is documented in [docs/c4-level3b-ir-datamodel.mmd](docs/c4-level3b-ir-datamodel.mmd). The data-driven registry is the main extension point: adding a DSL means creating a YAML catalog and matching parser/emitter pair, without changing the compiler core.
 
-The diagrams describe the system PolyQL is aiming at, not only the one that ships today. Anything not yet built — the federation proxy, the OTel exporter — is marked `[PLANNED]` and greyed in the diagrams, and [docs/ROADMAP.md](docs/ROADMAP.md) says what each gap would take to close and which decisions have to be made first. A test in [docs/](docs/) keeps the two in step: it fails if a component marked planned has since been built, which is the direction the drift actually runs.
+The diagrams describe the system PolyQL is aiming at, not only the one that ships today. What remains unbuilt — the vendor DSLs — is marked `[PLANNED]` and greyed, and [docs/ROADMAP.md](docs/ROADMAP.md) records what each closed gap decided and what is left. A test in [docs/](docs/) keeps the two in step: it fails if a component marked planned has since been built, which is the direction the drift actually runs, and it caught every one of this round's closures.
 
 ### Trace concepts in the IR
 
@@ -232,13 +273,13 @@ Common tasks, via the [Makefile](Makefile):
 
 | Command              | Purpose                                              |
 | --------------------- | ----------------------------------------------------- |
-| `make build`          | Build the binary to `./bin/polyql`                    |
+| `make build`          | Build both binaries to `./bin/`                       |
 | `make test`           | Run the test suite (`go test ./... -race`)             |
 | `make lint`           | Run golangci-lint                                     |
 | `make roundtrip`      | Run the round-trip fidelity tests                     |
 | `make generate`       | Regenerate the embedded registry from `registry/*.yaml` |
 | `make dashboard-demo` | Translate the sample dashboard, PromQL → LogQL         |
-| `make install`        | Install the binary with version info baked in          |
+| `make install`        | Install both binaries with version info baked in       |
 
 ## Contributing
 

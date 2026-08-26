@@ -1,0 +1,15 @@
+name: disjunction across two attributes
+description: The shape that genuinely has no conjunctive form.
+source_dsl: traceql
+target_dsl: logql
+input: '{span.a = 1 || span.b = 2}'
+expects_no_query: true
+expected_flags:
+  - path: Query.Source.Spanset
+    flag: UNSUPPORTED
+notes: >
+  The counterpart to the single-attribute case. "either this attribute or that
+  one" cannot be written between conjunctive braces at all, and keeping whichever
+  operand happened to fit would silently narrow the query. Both cases exist so
+  the boundary is pinned from both sides: a fold that reached this one would be
+  a translation that quietly changed what was asked.

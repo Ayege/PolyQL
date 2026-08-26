@@ -1572,3 +1572,123 @@ func TestFlatLabelName(t *testing.T) {
 		})
 	}
 }
+
+// TestFoldSameKeyDisjunction covers the one shape of disjunction a conjunctive
+// selector can hold, and — more importantly — every shape it cannot.
+//
+// The fold turns a query PromQL and LogQL would otherwise refuse outright into
+// one they write exactly, so the boundary has to be exact in both directions: a
+// fold that reached too far would silently change what a query asks.
+func TestFoldSameKeyDisjunction(t *testing.T) {
+	match := func(key string, op MatchOp, value string) Predicate {
+		return &MatchPredicate{Matcher: &LabelMatcher{Key: key, Op: op, Value: value}}
+	}
+	or := func(operands ...Predicate) Predicate {
+		return &LogicalPredicate{Op: LogicalOr, Operands: operands}
+	}
+
+	t.Run("folds", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			predicate Predicate
+			wantKey   string
+			wantVals  []string
+		}{
+			{
+				"two alternatives",
+				or(match("service", MatchEQ, "web"), match("service", MatchEQ, "api")),
+				"service", []string{"web", "api"},
+			},
+			{
+				// The resolver builds "a || b || c" as nested binary nodes, so
+				// the walk has to flatten rather than look one level down.
+				"three, arriving nested",
+				or(match("env", MatchEQ, "prod"),
+					or(match("env", MatchEQ, "staging"), match("env", MatchEQ, "dev"))),
+				"env", []string{"prod", "staging", "dev"},
+			},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				matcher, ok := FoldSameKeyDisjunction(c.predicate)
+				if !ok {
+					t.Fatal("expected the disjunction to fold")
+				}
+				if matcher.Key != c.wantKey {
+					t.Errorf("Key = %q, want %q", matcher.Key, c.wantKey)
+				}
+				if matcher.Op != MatchIn {
+					t.Errorf("Op = %s, want IN", matcher.Op)
+				}
+				if !reflect.DeepEqual(matcher.Values, c.wantVals) {
+					t.Errorf("Values = %v, want %v", matcher.Values, c.wantVals)
+				}
+				// Values move to Values, never Value: the emitters read one or
+				// the other and would write an empty operand otherwise.
+				if matcher.Value != "" {
+					t.Errorf("Value = %q, want it empty for a set operator", matcher.Value)
+				}
+			})
+		}
+	})
+
+	t.Run("does not fold", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			predicate Predicate
+			why       string
+		}{
+			{
+				"two different attributes",
+				or(match("a", MatchEQ, "1"), match("b", MatchEQ, "2")),
+				"there is no selector form for either-this-or-that",
+			},
+			{
+				"a regex operand",
+				or(match("a", MatchEQ, "x"), match("a", MatchRegex, "y.*")),
+				"an alternation of a literal and a pattern is not set membership",
+			},
+			{
+				"a negation",
+				or(match("a", MatchEQ, "x"), match("a", MatchNEQ, "y")),
+				"a negated alternative widens rather than narrows",
+			},
+			{
+				"an AND",
+				&LogicalPredicate{Op: LogicalAnd, Operands: []Predicate{
+					match("a", MatchEQ, "x"), match("a", MatchEQ, "y"),
+				}},
+				"a conjunction is already writable and means something else",
+			},
+			{
+				"a nested AND under the OR",
+				or(match("a", MatchEQ, "x"),
+					&LogicalPredicate{Op: LogicalAnd, Operands: []Predicate{
+						match("a", MatchEQ, "y"), match("b", MatchEQ, "z"),
+					}}),
+				"the nested conjunction is not an alternative for one attribute",
+			},
+			{
+				"a single operand",
+				&LogicalPredicate{Op: LogicalOr, Operands: []Predicate{match("a", MatchEQ, "x")}},
+				"one alternative is not a set",
+			},
+			{
+				"an operand that is already a set",
+				or(&MatchPredicate{Matcher: &LabelMatcher{
+					Key: "a", Op: MatchIn, Values: []string{"x", "y"}}},
+					match("a", MatchEQ, "z")),
+				"nesting a set inside an alternation is not handled",
+			},
+			{"a bare match", match("a", MatchEQ, "x"), "there is no disjunction here"},
+			{"nil", nil, "nothing to fold"},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				if matcher, ok := FoldSameKeyDisjunction(c.predicate); ok {
+					t.Errorf("folded to %v, but %s", matcher, c.why)
+				}
+			})
+		}
+	})
+}

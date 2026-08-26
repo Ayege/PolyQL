@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/polyql/polyql/pkg/registry"
+	"github.com/polyql/polyql/pkg/telemetry"
 
 	// Imported for their registration side effects: which languages this binary
 	// supports is decided by which packages it imports.
@@ -47,6 +49,12 @@ type options struct {
 	// drive the command in-process and read what it wrote.
 	stdout io.Writer
 	stderr io.Writer
+	// otlpEndpoint enables OpenTelemetry export when set. Empty — the default —
+	// installs no provider at all, so an ordinary run does no tracing work.
+	otlpEndpoint string
+	// otlpInsecure sends over plain HTTP, which a collector on localhost
+	// usually needs.
+	otlpInsecure bool
 	// stdin is where a query is read from when no --query or --file names one.
 	//
 	// It is nil when nothing is piped in. Deciding that is main's job rather
@@ -133,6 +141,11 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command, 
 		"directory of language definitions; the compiled-in set is used when omitted")
 	root.PersistentFlags().BoolVarP(&opts.verbose, "verbose", "v", false,
 		"log timing and translation detail to stderr")
+	root.PersistentFlags().StringVar(&opts.otlpEndpoint, "otlp-endpoint", "",
+		"export a trace span per translation to this OTLP/HTTP collector "+
+			"(default: the "+telemetry.EndpointEnv+" environment variable, or no export)")
+	root.PersistentFlags().BoolVar(&opts.otlpInsecure, "otlp-insecure", false,
+		"send traces over plain HTTP rather than TLS")
 
 	root.AddCommand(
 		newTranslateCommand(opts),
@@ -146,7 +159,38 @@ func newRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command, 
 func main() {
 	root, opts := newRootCommand(pipedStdin(), os.Stdout, os.Stderr)
 
-	if err := root.Execute(); err != nil {
+	// Tracing is set up after flag parsing but before the command runs, and torn
+	// down after — which is why this hangs off PersistentPreRunE rather than
+	// wrapping Execute: the endpoint is a flag, and flags are not parsed yet.
+	var shutdown telemetry.Shutdown
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		stop, err := telemetry.Setup(cmd.Context(), telemetry.Config{
+			Endpoint:    opts.otlpEndpoint,
+			ServiceName: "polyql",
+			Version:     version,
+			Insecure:    opts.otlpInsecure,
+			ErrorLog:    opts.stderr,
+		})
+		if err != nil {
+			// A misconfigured collector must not stop a translation. The work
+			// is local and the trace is a courtesy, so this is reported and
+			// carried past.
+			fmt.Fprintln(opts.stderr, "polyql: tracing disabled: "+err.Error())
+			return nil
+		}
+		shutdown = stop
+		return nil
+	}
+
+	err := root.Execute()
+
+	if shutdown != nil {
+		if flushErr := shutdown(context.Background()); flushErr != nil {
+			fmt.Fprintln(opts.stderr, "polyql: flushing traces: "+flushErr.Error())
+		}
+	}
+
+	if err != nil {
 		code := exitError
 		var coded *exitCodeError
 		if errors.As(err, &coded) {
