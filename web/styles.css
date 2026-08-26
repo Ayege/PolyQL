@@ -198,6 +198,42 @@ main {
   color: var(--accent);
 }
 
+/* --- advisory ----------------------------------------------------------- */
+
+/* Shown when the source language cannot parse what is in the editor. It is
+ * advice, not an error — the query is fine, the picker disagrees with it — so it
+ * takes the accent rather than the unsupported color, which is reserved for a
+ * verdict about a translation. */
+.advisory {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--accent);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+
+.advisory[hidden] { display: none; }
+
+.advisory-text { margin: 0; font-size: 0.85rem; color: var(--ink); }
+
+.advisory-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.advisory-button {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 100px;
+  cursor: pointer;
+}
+.advisory-button:hover { color: var(--surface); background: var(--accent); }
+
 /* --- workbench --------------------------------------------------------- */
 
 .workbench {
@@ -229,6 +265,7 @@ main {
 .dsl {
   font-family: var(--mono);
   font-size: 0.82rem;
+  max-width: 100%;
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--line);
@@ -422,6 +459,7 @@ main {
   gap: 0.3rem;
 }
 .colophon p { margin: 0; max-width: 62ch; }
+.colophon em { font-family: var(--mono); font-style: normal; color: var(--ink); }
 .build { font-family: var(--mono); font-size: 0.7rem; }
 
 @media (max-width: 860px) {

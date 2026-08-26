@@ -3,6 +3,13 @@
 // The page renders a seeded example immediately and translates live once the
 // WebAssembly module is ready. Both paths render through renderResult, so the
 // pre-load view and the live view cannot drift into showing different things.
+//
+// Two things the pickers do beyond picking. The source select checks that its
+// language actually parses what is in the editor, and says which ones do when it
+// does not — changing it otherwise produces a parse error for a language nobody
+// claimed the query was written in. The target select carries the cost of each
+// choice, surveyed by running the real translation against every language, so
+// the price of a target is visible before it is chosen rather than after.
 
 (function () {
   "use strict";
@@ -28,7 +35,11 @@
     chips: document.getElementById("examples"),
     swap: document.getElementById("swap"),
     copy: document.getElementById("copy"),
+    share: document.getElementById("share"),
     build: document.getElementById("build"),
+    advisory: document.getElementById("advisory"),
+    advisoryText: document.getElementById("advisory-text"),
+    advisoryActions: document.getElementById("advisory-actions"),
   };
 
   // The pickers are seeded from the examples so the page is usable before the
@@ -68,6 +79,8 @@
     if (!result) { return; }
 
     if (!result.ok) {
+      // A parse failure belongs to the source language, not the target: nothing
+      // was attempted, so there is no fidelity verdict to show.
       el.output.textContent = result.error;
       el.output.setAttribute("data-error", "true");
       el.output.removeAttribute("data-empty");
@@ -160,25 +173,134 @@
     return li;
   }
 
+  // --- the pickers -------------------------------------------------------
+
+  // costLabel turns one survey entry into the text beside a target's name. The
+  // three outcomes a chooser actually distinguishes are: it survives exactly, it
+  // survives approximately, and part of it does not survive at all.
+  function costLabel(entry) {
+    if (!entry.ok) { return "won't parse"; }
+    if (entry.empty) { return "nothing written"; }
+    if (entry.unsupported > 0) {
+      return entry.unsupported + (entry.unsupported === 1 ? " dropped" : " dropped");
+    }
+    if (entry.partial > 0) { return "approx " + entry.score.toFixed(2); }
+    return "exact";
+  }
+
+  // annotateTargets rewrites the target options with what each would cost. The
+  // survey runs the same translation the page runs, so a target labelled here as
+  // exact is exact when selected.
+  function annotateTargets(source, query) {
+    if (!engineReady || !query) {
+      fillSelect(el.target, languages, el.target.value);
+      return;
+    }
+
+    var survey = window.polyqlSurvey(source, query) || [];
+    var costs = {};
+    survey.forEach(function (entry) { costs[entry.target] = entry; });
+
+    var selected = el.target.value;
+    el.target.textContent = "";
+    languages.forEach(function (dsl) {
+      var option = document.createElement("option");
+      option.value = dsl;
+      option.textContent = costs[dsl] ? dsl + " · " + costLabel(costs[dsl]) : dsl;
+      if (dsl === selected) { option.selected = true; }
+      el.target.appendChild(option);
+    });
+  }
+
+  // showAdvisory explains a source language that does not parse the query, and
+  // offers the languages that do. Without this, changing the source picker
+  // reports a parse error against a language the query was never written in,
+  // which reads as the tool being broken rather than the picker being wrong.
+  function showAdvisory(query) {
+    el.advisoryActions.textContent = "";
+
+    var accepted = window.polyqlDetect(query) || [];
+    if (accepted.indexOf(el.source.value) !== -1) {
+      el.advisory.hidden = true;
+      return;
+    }
+
+    if (accepted.length === 0) {
+      // Nothing parses it, so this is a query problem and the parse error in the
+      // output pane already says where. Adding a banner would say it twice.
+      el.advisory.hidden = true;
+      return;
+    }
+
+    el.advisoryText.textContent =
+      "No " + el.source.value + " parser accepts this query. It is accepted by:";
+
+    accepted.forEach(function (dsl) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "advisory-button";
+      button.textContent = "read it as " + dsl;
+      button.addEventListener("click", function () {
+        el.source.value = dsl;
+        translateNow();
+      });
+      el.advisoryActions.appendChild(button);
+    });
+
+    el.advisory.hidden = false;
+  }
+
   // --- translating -------------------------------------------------------
 
   function translateNow() {
     if (!engineReady) { return; }
+
     var query = el.query.value.trim();
     if (!query) {
       el.output.textContent = "type a query";
       el.output.setAttribute("data-empty", "true");
       el.output.removeAttribute("data-error");
       el.notes.textContent = "";
+      el.advisory.hidden = true;
       renderVerdict(null);
+      annotateTargets(el.source.value, "");
+      updateLocation();
       return;
     }
+
     renderResult(window.polyqlTranslate(el.source.value, el.target.value, query));
+    annotateTargets(el.source.value, query);
+    showAdvisory(query);
+    updateLocation();
   }
 
   function scheduleTranslate() {
     window.clearTimeout(debounceTimer);
     debounceTimer = window.setTimeout(translateNow, 150);
+  }
+
+  // --- sharing -----------------------------------------------------------
+
+  // The page's whole state is three values, so it fits in a link. A demo is much
+  // easier to hand to someone as a URL that opens on the query being discussed.
+  function updateLocation() {
+    var params = new URLSearchParams();
+    params.set("from", el.source.value);
+    params.set("to", el.target.value);
+    var query = el.query.value.trim();
+    if (query) { params.set("q", query); }
+    window.history.replaceState(null, "", "?" + params.toString());
+  }
+
+  function readLocation() {
+    var params = new URLSearchParams(window.location.search);
+    var query = params.get("q");
+    if (!query) { return null; }
+    return {
+      query: query,
+      source: params.get("from") || "promql",
+      target: params.get("to") || "logql",
+    };
   }
 
   // --- examples ----------------------------------------------------------
@@ -192,6 +314,7 @@
     fillSelect(el.source, languages, ex.source);
     fillSelect(el.target, languages, ex.target);
     el.exampleNote.textContent = ex.note;
+    el.advisory.hidden = true;
     markActiveChip();
 
     // Before the module is ready the seeded result is all there is; after, the
@@ -213,6 +336,7 @@
       chip.className = "chip";
       chip.textContent = ex.title;
       chip.setAttribute("aria-pressed", "false");
+      chip.title = ex.source + " → " + ex.target;
       chip.addEventListener("click", function () { loadExample(i); });
       el.chips.appendChild(chip);
     });
@@ -230,21 +354,46 @@
   el.source.addEventListener("change", translateNow);
   el.target.addEventListener("change", translateNow);
 
+  // Swapping carries the output back into the editor, because after a swap the
+  // old query is written in what is now the target language. Translating the
+  // result back is also the interesting thing to do with a swap: it shows what
+  // survives a round trip.
   el.swap.addEventListener("click", function () {
     var from = el.source.value;
+    var carried = el.output.getAttribute("data-empty") !== "true" &&
+      el.output.getAttribute("data-error") !== "true" ? el.output.textContent : "";
+
     el.source.value = el.target.value;
     el.target.value = from;
+    if (carried) {
+      el.query.value = carried;
+      currentExample = -1;
+      markActiveChip();
+      el.exampleNote.textContent = "";
+    }
     translateNow();
   });
 
   el.copy.addEventListener("click", function () {
     var text = el.output.textContent;
     if (!text || el.output.getAttribute("data-empty") === "true") { return; }
-    navigator.clipboard.writeText(text).then(function () {
-      el.copy.textContent = "copied";
-      window.setTimeout(function () { el.copy.textContent = "copy"; }, 1200);
-    });
+    copyToClipboard(text, el.copy, "copy");
   });
+
+  el.share.addEventListener("click", function () {
+    updateLocation();
+    copyToClipboard(window.location.href, el.share, "link");
+  });
+
+  function copyToClipboard(text, button, label) {
+    navigator.clipboard.writeText(text).then(function () {
+      button.textContent = "copied";
+      window.setTimeout(function () { button.textContent = label; }, 1200);
+    }).catch(function () {
+      button.textContent = "failed";
+      window.setTimeout(function () { button.textContent = label; }, 1200);
+    });
+  }
 
   document.addEventListener("keydown", function (event) {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -291,7 +440,23 @@
   };
 
   buildChips();
-  loadExample(0);
+
+  // A link wins over the default example: someone followed it to see one
+  // specific query.
+  var shared = readLocation();
+  if (shared) {
+    currentExample = -1;
+    el.query.value = shared.query;
+    fillSelect(el.source, languages, shared.source);
+    fillSelect(el.target, languages, shared.target);
+    el.exampleNote.textContent = "";
+    el.output.textContent = "translating once the engine loads…";
+    el.output.setAttribute("data-empty", "true");
+    markActiveChip();
+  } else {
+    loadExample(0);
+  }
+
   setStatus("loading", "loading engine…");
 
   // Load the module last, so the seeded view is already painted when the

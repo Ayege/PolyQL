@@ -82,12 +82,46 @@ for (const c of cases) {
   console.log(`${c.from}→${c.to}: ${result.output || "(nothing emitted)"}  [score ${result.report.score.toFixed(2)}]`);
 }
 
+// The pickers rely on two more exports. Detection is what lets the source picker
+// say which languages accept a query; the survey is what puts a cost beside each
+// target before it is chosen.
+const detected = globalThis.polyqlDetect('{app="api"} |= "error"');
+if (!detected.includes("logql")) {
+  fail(`detect did not recognize a logql query (got: ${detected.join(", ") || "nothing"})`);
+}
+if (globalThis.polyqlDetect("nonsense((").length !== 0) {
+  fail("detect accepted a query that no parser should accept");
+}
+console.log(`detect: a line filter parses as ${detected.join(", ")}`);
+
+const survey = globalThis.polyqlSurvey("promql", "rate(http_requests_total[5m])");
+if (survey.length !== languages.length) {
+  fail(`survey covered ${survey.length} of ${languages.length} languages`);
+}
+const identity = survey.find((entry) => entry.target === "promql");
+if (!identity || identity.score !== 1) {
+  fail(`a query surveyed against its own language should cost nothing, got ${JSON.stringify(identity)}`);
+}
+// The survey must agree with the translation it is previewing: a picker showing
+// one number and the pane showing another is worse than showing no number.
+for (const entry of survey) {
+  if (!entry.ok) { continue; }
+  const direct = globalThis.polyqlTranslate("promql", entry.target, "rate(http_requests_total[5m])");
+  if (direct.report.score !== entry.score) {
+    fail(`survey says ${entry.target} scores ${entry.score}, translating says ${direct.report.score}`);
+  }
+}
+console.log("survey: " + survey.map((e) => `${e.target}=${e.ok ? e.score.toFixed(2) : "err"}`).join(" "));
+
 // Calling it wrong must return a value too: a panic across the js boundary takes
 // the exported functions with it, and the page would go silent rather than show
 // an error.
 const arity = globalThis.polyqlTranslate("promql");
 if (arity.ok !== false || !arity.error) {
   fail("a call with too few arguments did not come back as an error value");
+}
+if (globalThis.polyqlDetect().length !== 0 || globalThis.polyqlSurvey("promql").length !== 0) {
+  fail("detect or survey did not tolerate a call with too few arguments");
 }
 
 console.log("smoke: ok");

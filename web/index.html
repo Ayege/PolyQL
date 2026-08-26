@@ -23,7 +23,7 @@
       <span class="status-dot" aria-hidden="true"></span>
       <span id="status-text">loading engine&hellip;</span>
     </span>
-    <a class="repo-link" href="https://github.com/ayege/polyql">source</a>
+    <a class="repo-link" href="https://github.com/Ayege/PolyQL">source</a>
   </div>
 </header>
 
@@ -32,6 +32,11 @@
     <span class="rail-label">Try</span>
     <div class="chips" id="examples"></div>
   </section>
+
+  <div class="advisory" id="advisory" hidden>
+    <p class="advisory-text" id="advisory-text"></p>
+    <div class="advisory-actions" id="advisory-actions"></div>
+  </div>
 
   <section class="workbench">
     <article class="pane">
@@ -44,7 +49,7 @@
       <p class="pane-foot" id="example-note"></p>
     </article>
 
-    <button type="button" id="swap" class="swap" title="Swap languages" aria-label="Swap languages">
+    <button type="button" id="swap" class="swap" title="Swap languages and translate the result back" aria-label="Swap languages and translate the result back">
       <span aria-hidden="true">&#8644;</span>
     </button>
 
@@ -53,6 +58,7 @@
         <label class="rail-label" for="target-dsl">to</label>
         <select id="target-dsl" class="dsl"></select>
         <button type="button" id="copy" class="copy">copy</button>
+        <button type="button" id="share" class="copy" title="Copy a link to this query">link</button>
       </div>
       <pre class="output" id="output" aria-live="polite"></pre>
       <ul class="notes" id="notes"></ul>
@@ -75,8 +81,13 @@
 
   <footer class="colophon">
     <p>
-      The page runs the compiler itself, compiled to WebAssembly. Nothing you type is
-      sent anywhere &mdash; there is no server to send it to.
+      The page runs the compiler itself, compiled to WebAssembly. Typing translates
+      locally &mdash; there is no server to send a query to.
+    </p>
+    <p>
+      One exception worth knowing: <em>link</em> puts the query in the URL, so
+      opening a shared link sends that query to whoever hosts the page, the way any
+      URL does. Typing never does.
     </p>
     <p class="build" id="build"></p>
   </footer>

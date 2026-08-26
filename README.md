@@ -6,10 +6,7 @@ Translate observability queries across PromQL, LogQL, and vendor DSLs without lo
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/ayege/polyql)](https://goreportcard.com/report/github.com/ayege/polyql)
-
 [![Architecture](<https://img.shields.io/badge/Architecture-Clean%20Go%20%2B%20C4-059669?logo=diagramsdotnet&logoColor=white>)](docs/)
-
 
 <img src="assets/demo.gif" alt="PolyQL live translation demo" width="100%" />
 
@@ -47,7 +44,7 @@ Existing translators are usually single-pair and one-directional: a PromQL-to-Lo
 The playground runs the compiler itself, compiled to WebAssembly: type a query,
 pick a direction, and read the fidelity report beside the output.
 
-**<https://ayege.github.io/PolyQL/>**
+**[https://ayege.github.io/PolyQL/](https://ayege.github.io/PolyQL/)**
 
 Nothing is sent anywhere — there is no backend, and the query never leaves the
 tab. It opens on worked examples chosen to show the range honestly, including the
@@ -168,31 +165,31 @@ silently dropped, which is the point.
 
 PolyQL exposes a small command surface for interactive use and automation:
 
-| Command                    | Purpose                                                |
-| --------------------------- | ------------------------------------------------------ |
-| `polyql translate`          | Translate a single query, a file of queries, or stdin  |
-| `polyql dashboard translate`| Translate every panel expression in a Grafana dashboard, read from a file or fetched over the Grafana API |
-| `polyql registry list`      | List the languages this binary can parse and emit      |
-| `polyql registry validate`  | Check that a directory of language definitions loads    |
-| `polyql registry diff`      | Compare a directory of definitions against the built-in set |
-| `polyql version`            | Print build info and the languages this binary supports |
-| `polyql-proxy`              | Translate queries in flight and forward them to a backend — see [Translating proxy](#translating-proxy) |
+| Command                        | Purpose                                                                                                   |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `polyql translate`           | Translate a single query, a file of queries, or stdin                                                     |
+| `polyql dashboard translate` | Translate every panel expression in a Grafana dashboard, read from a file or fetched over the Grafana API |
+| `polyql registry list`       | List the languages this binary can parse and emit                                                         |
+| `polyql registry validate`   | Check that a directory of language definitions loads                                                      |
+| `polyql registry diff`       | Compare a directory of definitions against the built-in set                                               |
+| `polyql version`             | Print build info and the languages this binary supports                                                   |
+| `polyql-proxy`               | Translate queries in flight and forward them to a backend — see[Translating proxy](#translating-proxy)    |
 
 Global flags, available on every command:
 
-| Flag              | Purpose                                                          |
-| ------------------ | ----------------------------------------------------------------- |
-| `--registry-dir`   | Load language definitions from a directory instead of the compiled-in set |
-| `-v`, `--verbose`  | Log timing and translation detail to stderr                       |
-| `--otlp-endpoint`  | Export a trace span per translation to an OTLP/HTTP collector      |
+| Flag                  | Purpose                                                                   |
+| --------------------- | ------------------------------------------------------------------------- |
+| `--registry-dir`    | Load language definitions from a directory instead of the compiled-in set |
+| `-v`, `--verbose` | Log timing and translation detail to stderr                               |
+| `--otlp-endpoint`   | Export a trace span per translation to an OTLP/HTTP collector             |
 
 Exit codes are the CLI's contract with a shell script or CI job — they distinguish "the translation lost something" from "the command couldn't run at all":
 
-| Code | Meaning                                                                 |
-| ---- | ------------------------------------------------------------------------ |
-| `0`  | Every construct translated fully                                        |
-| `1`  | The translation ran but lost something (unsupported, or partial with `--fail-on-partial`) |
-| `2`  | The command couldn't run — a query that wouldn't parse, a registry that wouldn't load, an unknown language |
+| Code  | Meaning                                                                                                     |
+| ----- | ----------------------------------------------------------------------------------------------------------- |
+| `0` | Every construct translated fully                                                                            |
+| `1` | The translation ran but lost something (unsupported, or partial with`--fail-on-partial`)                  |
+| `2` | The command couldn't run — a query that wouldn't parse, a registry that wouldn't load, an unknown language |
 
 For `dashboard translate`, a panel whose expression will not parse is a loss and
 not a failure to run: the other panels are still translated and written, so it
@@ -218,11 +215,11 @@ Two behaviors are worth stating plainly, because both are deliberate:
 
 Every translated response carries what it cost:
 
-| Header | Meaning |
-| ------ | ------- |
-| `X-Polyql-Fidelity-Score` | The score, `0.0`–`1.0` |
-| `X-Polyql-Notes` | How many things the translation could not express exactly |
-| `X-Polyql-Translated-Query` | The query actually sent upstream |
+| Header                        | Meaning                                                   |
+| ----------------------------- | --------------------------------------------------------- |
+| `X-Polyql-Fidelity-Score`   | The score,`0.0`–`1.0`                                |
+| `X-Polyql-Notes`            | How many things the translation could not express exactly |
+| `X-Polyql-Translated-Query` | The query actually sent upstream                          |
 
 `/healthz` and `/readyz` answer without touching the backend, so a proxy that is fine does not report itself unhealthy when the thing behind it blips.
 
@@ -298,17 +295,17 @@ The full walkthrough — including the YAML shape and where parser/emitter code 
 
 Common tasks, via the [Makefile](Makefile):
 
-| Command              | Purpose                                              |
-| --------------------- | ----------------------------------------------------- |
-| `make build`          | Build both binaries to `./bin/`                       |
-| `make test`           | Run the test suite (`go test ./... -race`)             |
-| `make lint`           | Run golangci-lint                                     |
-| `make roundtrip`      | Run the round-trip fidelity tests                     |
-| `make generate`       | Regenerate the embedded registry from `registry/*.yaml` |
-| `make dashboard-demo` | Translate the sample dashboard, PromQL → LogQL         |
-| `make playground`     | Build the browser playground into `web/`               |
-| `make playground-serve` | Build it and serve it on `localhost:8080`            |
-| `make install`        | Install both binaries with version info baked in       |
+| Command                   | Purpose                                                  |
+| ------------------------- | -------------------------------------------------------- |
+| `make build`            | Build both binaries to`./bin/`                         |
+| `make test`             | Run the test suite (`go test ./... -race`)             |
+| `make lint`             | Run golangci-lint                                        |
+| `make roundtrip`        | Run the round-trip fidelity tests                        |
+| `make generate`         | Regenerate the embedded registry from`registry/*.yaml` |
+| `make dashboard-demo`   | Translate the sample dashboard, PromQL → LogQL          |
+| `make playground`       | Build the browser playground into`web/`                |
+| `make playground-serve` | Build it and serve it on`localhost:8080`               |
+| `make install`          | Install both binaries with version info baked in         |
 
 ## Contributing
 

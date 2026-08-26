@@ -18,6 +18,7 @@ import (
 
 	"github.com/polyql/polyql/pkg/compiler"
 	"github.com/polyql/polyql/pkg/compiler/fidelity"
+	"github.com/polyql/polyql/pkg/compiler/parser"
 	"github.com/polyql/polyql/pkg/registry"
 
 	// Imported for their registration side effects, exactly as the CLI does:
@@ -48,6 +49,8 @@ func main() {
 
 	js.Global().Set("polyqlTranslate", js.FuncOf(translateFunc(reg)))
 	js.Global().Set("polyqlLanguages", js.FuncOf(languagesFunc(reg)))
+	js.Global().Set("polyqlDetect", js.FuncOf(detectFunc()))
+	js.Global().Set("polyqlSurvey", js.FuncOf(surveyFunc(reg)))
 	js.Global().Set("polyqlVersion", js.ValueOf(map[string]any{
 		"version": version,
 		"commit":  commit,
@@ -151,6 +154,104 @@ func reportValue(r *fidelity.Report) any {
 		value["signalMismatch"] = r.SignalMismatch.Message
 	}
 	return value
+}
+
+// detectFunc reports which languages will parse the given text.
+//
+// This is not language identification and does not guess: it asks each
+// registered parser whether it accepts the input, and returns those that do. A
+// query can legitimately come back with more than one — "{app=\"x\"}" is a valid
+// stream selector and a valid spanset — and the page presents the answer as
+// "these parsers accept it", never as "this is LogQL".
+//
+// It exists so that changing the source language can say something useful when
+// the text stops parsing, instead of showing a parse error for a language the
+// user never claimed the query was written in.
+func detectFunc() func(js.Value, []js.Value) any {
+	return func(_ js.Value, args []js.Value) (result any) {
+		defer func() {
+			if r := recover(); r != nil {
+				result = []any{}
+			}
+		}()
+
+		if len(args) < 1 {
+			return []any{}
+		}
+		query := args[0].String()
+		if query == "" {
+			return []any{}
+		}
+
+		var accepted []string
+		for _, dsl := range parser.List() {
+			front, err := parser.Get(dsl)
+			if err != nil {
+				continue
+			}
+			if _, err := front.Parse(query); err == nil {
+				accepted = append(accepted, dsl)
+			}
+		}
+		return strings(accepted)
+	}
+}
+
+// surveyFunc translates one query into every registered language and reports
+// what each would cost, so the target picker can show the price of a choice
+// before it is made rather than after.
+//
+// Every entry is a real translation run through the real pipeline. Nothing here
+// estimates: a target listed as losing something lost it, and the same call with
+// that target selected produces exactly the output the page then shows.
+func surveyFunc(reg *registry.Registry) func(js.Value, []js.Value) any {
+	return func(_ js.Value, args []js.Value) (result any) {
+		defer func() {
+			if r := recover(); r != nil {
+				result = []any{}
+			}
+		}()
+
+		if len(args) < 2 {
+			return []any{}
+		}
+		source, query := args[0].String(), args[1].String()
+
+		targets := reg.List()
+		out := make([]any, 0, len(targets))
+		for _, target := range targets {
+			entry := map[string]any{"target": target}
+
+			res, err := compiler.Translate(context.Background(), compiler.Request{
+				SourceDSL: source,
+				TargetDSL: target,
+				Query:     query,
+				Registry:  reg,
+			})
+			if err != nil {
+				// A parse failure is the source language's problem and is the
+				// same for every target, so it is reported per entry rather than
+				// silently dropping the target from the list.
+				entry["ok"] = false
+				entry["error"] = err.Error()
+				out = append(out, entry)
+				continue
+			}
+
+			entry["ok"] = true
+			entry["score"] = res.Report.FidelityScore
+			entry["partial"] = res.Report.PartialCount
+			entry["unsupported"] = res.Report.UnsupportedCount
+			entry["worstFlag"] = res.Report.WorstFlag.String()
+			entry["signalMismatch"] = res.Report.SignalMismatch != nil
+			// Whether anything was written at all is the distinction a picker
+			// most needs: a target that produced no query is a different kind of
+			// answer from one that produced an approximate query.
+			entry["empty"] = res.Output == ""
+			out = append(out, entry)
+		}
+		return out
+	}
 }
 
 // strings converts a Go slice for js.ValueOf, which accepts []any and not
