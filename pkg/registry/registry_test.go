@@ -43,7 +43,7 @@ func withCleanRegistry(t *testing.T) {
 func TestLoadBothDefinitions(t *testing.T) {
 	defs := loadRegistry(t)
 
-	for _, dsl := range []string{"promql", "logql"} {
+	for _, dsl := range []string{"promql", "logql", "traceql"} {
 		def, ok := defs[dsl]
 		if !ok {
 			t.Fatalf("%s is missing from the loaded registry (got %v)", dsl, keysOf(defs))
@@ -89,6 +89,169 @@ func TestSignalTypes(t *testing.T) {
 	if defs["logql"].SupportsSignal(ir.SignalMetric) {
 		t.Error("LogQL's data source is logs, not metrics")
 	}
+	// TraceQL's count() produces a number, but from spans: the data source is
+	// still a span set, which is what the signal type records.
+	if !defs["traceql"].SupportsSignal(ir.SignalSpan) {
+		t.Error("TraceQL should query spans")
+	}
+	if defs["traceql"].SupportsSignal(ir.SignalMetric) {
+		t.Error("TraceQL's data source is spans, not metrics")
+	}
+}
+
+// TestTraceQLDefinition covers the three schema sections only a span language
+// uses, and the capability flags that say what TraceQL cannot do. Each of them
+// changes a verdict the validator reaches, so a definition drifting from the
+// language would show up as a wrong fidelity score rather than as an error.
+func TestTraceQLDefinition(t *testing.T) {
+	def := loadRegistry(t)["traceql"]
+
+	t.Run("aggregations collapse across spans", func(t *testing.T) {
+		// TraceQL has no window to aggregate over, so every aggregation is on
+		// the group axis. A temporal one from PromQL is therefore a scope
+		// mismatch, which is the honest report.
+		for _, name := range []string{"count", "sum", "avg", "min", "max"} {
+			fn, err := def.Function(name)
+			if err != nil {
+				t.Errorf("Function(%q): %v", name, err)
+				continue
+			}
+			if !fn.IsAggregation {
+				t.Errorf("%s should map to an IR aggregation operator", name)
+			}
+			if fn.AggScope != ir.AggScopeGroup {
+				t.Errorf("%s scope = %s, want GROUP", name, fn.AggScope)
+			}
+			if fn.Arity != 0 {
+				t.Errorf("%s arity = %d, want 0: TraceQL writes its operand after \"over\"",
+					name, fn.Arity)
+			}
+		}
+
+		count, _ := def.Function("count")
+		if count.AggOp != ir.AggCount {
+			t.Errorf("count AggOp = %s, want COUNT", count.AggOp)
+		}
+		// count() counts whole spans, so it is the one aggregate whose result
+		// is an integer rather than a double.
+		if count.ReturnType != ir.DataTypeSignedInt {
+			t.Errorf("count ReturnType = %s, want SIGNED_INT", count.ReturnType)
+		}
+	})
+
+	t.Run("the metric functions are absent", func(t *testing.T) {
+		// Nothing about a span is a rate, and claiming one would let the
+		// validator promise a translation the emitter cannot write.
+		for _, name := range []string{"rate", "increase", "histogram_quantile", "topk"} {
+			if _, err := def.Function(name); err == nil {
+				t.Errorf("TraceQL has no %s and should say so", name)
+			}
+		}
+	})
+
+	t.Run("structural operators", func(t *testing.T) {
+		want := map[ir.StructuralOp]string{
+			ir.StructuralChild:      ">",
+			ir.StructuralDescendant: ">>",
+			ir.StructuralSibling:    "~",
+		}
+		for op, symbol := range want {
+			got, ok := def.StructuralOperatorForIROp(op)
+			if !ok {
+				t.Errorf("no spelling for %s", op)
+				continue
+			}
+			if got.Symbol != symbol {
+				t.Errorf("%s = %q, want %q", op, got.Symbol, symbol)
+			}
+			if got.Description == "" {
+				t.Errorf("%s should carry a description for a fidelity report to quote", op)
+			}
+			if !def.Capabilities.SupportsStructuralOp(op) {
+				t.Errorf("capabilities should list %s", op)
+			}
+		}
+		if got := def.StructuralOperatorNames(); len(got) != 3 {
+			t.Errorf("StructuralOperatorNames() = %v, want three", got)
+		}
+
+		// Child and descendant must stay distinct. Rendering both as ">>" would
+		// silently widen every child query into a descendant one.
+		child, _ := def.StructuralOperatorForIROp(ir.StructuralChild)
+		descendant, _ := def.StructuralOperatorForIROp(ir.StructuralDescendant)
+		if child.Symbol == descendant.Symbol {
+			t.Errorf("child and descendant share the spelling %q", child.Symbol)
+		}
+	})
+
+	t.Run("logical operators", func(t *testing.T) {
+		want := map[ir.LogicalOp]string{
+			ir.LogicalAnd: "&&",
+			ir.LogicalOr:  "||",
+			ir.LogicalNot: "!",
+		}
+		for op, symbol := range want {
+			got, ok := def.LogicalOperatorForIROp(op)
+			if !ok {
+				t.Errorf("no spelling for %s", op)
+				continue
+			}
+			if got.Symbol != symbol {
+				t.Errorf("%s = %q, want %q", op, got.Symbol, symbol)
+			}
+		}
+	})
+
+	t.Run("capabilities", func(t *testing.T) {
+		caps := def.Capabilities
+		// Each of these is load-bearing: the validator reads it to decide
+		// whether a construct is UNSUPPORTED rather than merely awkward.
+		if caps.Arithmetic {
+			t.Error("a span set is not a number; arithmetic should be false")
+		}
+		if caps.TemporalWindows {
+			t.Error("Tempo takes its time range as request parameters; temporal_windows should be false")
+		}
+		if caps.Joins {
+			t.Error("TraceQL relates spans by the trace tree, not by joining; joins should be false")
+		}
+		if caps.Subqueries {
+			t.Error("TraceQL has no subquery form")
+		}
+		if !caps.BooleanSelectors {
+			t.Error("TraceQL braces hold a full boolean expression")
+		}
+		if !caps.AttributeCasts {
+			t.Error("TraceQL can reinterpret an attribute's type with \"as\"")
+		}
+		if !caps.ScopedAttributes {
+			t.Error("TraceQL addresses attributes through span./resource./intrinsic scopes")
+		}
+		if !caps.MetricExtraction {
+			t.Error("count() over (...) derives a number from records that are not numbers")
+		}
+	})
+
+	t.Run("the other definitions keep the defaults", func(t *testing.T) {
+		// The capability defaults describe the languages already in the
+		// registry, so a definition that says nothing keeps its meaning.
+		defs := loadRegistry(t)
+		for _, dsl := range []string{"promql", "logql"} {
+			caps := defs[dsl].Capabilities
+			if !caps.Arithmetic {
+				t.Errorf("%s has arithmetic and declares nothing, so it should default to true", dsl)
+			}
+			if !caps.TemporalWindows {
+				t.Errorf("%s has a range selector and declares nothing, so it should default to true", dsl)
+			}
+			if caps.BooleanSelectors {
+				t.Errorf("%s has a conjunctive selector, so boolean_selectors should default to false", dsl)
+			}
+			if len(caps.StructuralOps) != 0 {
+				t.Errorf("%s does not query spans and should declare no structural operators", dsl)
+			}
+		}
+	})
 }
 
 // TestLookupRate covers the mapping the resolver depends on most: a DSL
@@ -443,16 +606,36 @@ func TestLoadInstallsForGet(t *testing.T) {
 		t.Errorf("Get should normalise the name: %v", err)
 	}
 
-	if got := List(); len(got) != 2 || got[0] != "logql" || got[1] != "promql" {
-		t.Errorf("List() = %v, want [logql promql]", got)
-	}
+	// The set is asserted by membership rather than by length, so adding a
+	// language does not break a test that is about installation rather than
+	// about how many definitions ship.
+	assertContainsDSLs(t, List(), "logql", "promql", "traceql")
 
-	_, err = Get("traceql")
+	// A name no definition claims, so the error path stays reachable however
+	// many languages the registry grows.
+	_, err = Get("nonsuchql")
 	if err == nil {
 		t.Fatal("expected an error for an unloaded DSL")
 	}
 	if !strings.Contains(err.Error(), "logql, promql") {
 		t.Errorf("error %q should list what is loaded", err)
+	}
+}
+
+// assertContainsDSLs checks that a sorted DSL list holds each wanted name.
+func assertContainsDSLs(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	have := make(map[string]bool, len(got))
+	for _, name := range got {
+		have[name] = true
+	}
+	for _, name := range want {
+		if !have[name] {
+			t.Errorf("%v is missing %q", got, name)
+		}
+	}
+	if !sort.StringsAreSorted(got) {
+		t.Errorf("%v should be sorted", got)
 	}
 }
 
@@ -674,6 +857,9 @@ func keysOf(defs map[string]*DSLDefinition) []string {
 	for name := range defs {
 		names = append(names, name)
 	}
+	// Sorted so that a failure message reads the same on every run, and so a
+	// caller comparing against List's own ordering is comparing like with like.
+	sort.Strings(names)
 	return names
 }
 
@@ -688,9 +874,7 @@ func TestLoadFallsBackToEmbedded(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load(%q): %v", dir, err)
 			}
-			if len(defs) != 2 {
-				t.Errorf("loaded %d definitions, want 2", len(defs))
-			}
+			assertContainsDSLs(t, keysOf(defs), "logql", "promql", "traceql")
 			if !defs["promql"].IsEmbedded() {
 				t.Errorf("SourcePath = %q, want the embedded set", defs["promql"].SourcePath)
 			}
@@ -756,10 +940,7 @@ func TestLoadEmbedded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DefaultRegistry: %v", err)
 		}
-		got := reg.List()
-		if len(got) != 2 || got[0] != "logql" || got[1] != "promql" {
-			t.Errorf("List() = %v, want [logql promql]", got)
-		}
+		assertContainsDSLs(t, reg.List(), "logql", "promql", "traceql")
 		if _, err := reg.Get("promql"); err != nil {
 			t.Errorf("Get: %v", err)
 		}

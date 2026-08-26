@@ -1,0 +1,13 @@
+name: boolean spanset filter
+description: An OR grouped beneath an AND, which a conjunctive selector cannot hold.
+source_dsl: traceql
+target_dsl: traceql
+input: '{(.a = 1 || .b = 2) && .c = 3}'
+expected_output: '{ (.a = 1 || .b = 2) && .c = 3 }'
+expected_fidelity_score: 1.0
+notes: >
+  This is the case that justifies ir.SpansetSelector holding a predicate tree
+  rather than a flat matcher list. Flattening it to a conjunction would change
+  which spans match, and there is no regex trick that says the same thing
+  because the operands address different attributes. The parentheses are
+  reproduced rather than re-derived from precedence.

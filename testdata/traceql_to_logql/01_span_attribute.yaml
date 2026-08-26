@@ -1,0 +1,15 @@
+name: span attribute to stream label
+description: A scoped span attribute folded onto LogQL's flat label namespace.
+source_dsl: traceql
+target_dsl: logql
+input: '{span.http.status_code = 500}'
+expected_output: '{span_http_status_code="500"}'
+expected_flags:
+  - path: Query.Source.Spanset.Filters
+    flag: PARTIAL
+notes: >
+  LogQL has one flat label namespace and admits no dot in a name, so the scope
+  prefix has to be folded into the key. Replacing each dot with an underscore is
+  the rule OpenTelemetry's own Prometheus exporter follows, which makes the
+  rewritten name the one the data is most likely already stored under — but it
+  is a rename, and the report says so rather than passing it off as exact.

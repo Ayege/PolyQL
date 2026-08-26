@@ -1,0 +1,16 @@
+name: simple spanset selector
+description: A single attribute comparison, the smallest complete TraceQL query.
+source_dsl: traceql
+target_dsl: traceql
+input: '{span.http.status_code = 500}'
+expected_output: '{ span.http.status_code = 500 }'
+expected_fidelity_score: 1.0
+expected_flags:
+  - path: Query
+    flag: FULL
+notes: >
+  Translating TraceQL into itself is the control case for every other TraceQL
+  entry in the corpus: it isolates what the parser and emitter do from any
+  cross-language loss. The scope prefix survives because the target has scoped
+  attributes, and the numeric operand stays unquoted because the emitter
+  recovers its type from the text the IR stores.

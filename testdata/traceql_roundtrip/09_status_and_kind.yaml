@@ -1,0 +1,12 @@
+name: status and kind intrinsics
+description: TraceQL's unquoted enum operands.
+source_dsl: traceql
+target_dsl: traceql
+input: '{status = error && kind = server}'
+expected_output: '{ status = error && kind = server }'
+expected_fidelity_score: 1.0
+notes: >
+  These operands are bare words in TraceQL, not strings. Without the enum
+  tables in the parser and the emitter they would scan as attribute names and
+  fail as a missing operator, or come back quoted and change meaning. This case
+  pins both directions of that handling.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -1347,5 +1348,227 @@ func TestNodeTypeName(t *testing.T) {
 		if got := NodeTypeName(c.node); got != c.want {
 			t.Errorf("NodeTypeName(%T) = %q, want %q", c.node, got, c.want)
 		}
+	}
+}
+
+// TestSpansetSelector covers the node that exists because a Selector cannot
+// stand in for it: a Selector's matchers are conjunctive, and a span set filter
+// is a full boolean expression.
+func TestSpansetSelector(t *testing.T) {
+	t.Run("an empty selector still selects", func(t *testing.T) {
+		var empty SpansetSelector
+		if got, want := empty.String(), "{}"; got != want {
+			t.Errorf("String() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a disjunction survives", func(t *testing.T) {
+		spanset := &SpansetSelector{Filters: &LogicalPredicate{
+			Op: LogicalOr,
+			Operands: []Predicate{
+				&MatchPredicate{Matcher: &LabelMatcher{Key: "span.a", Op: MatchEQ, Value: "1"}},
+				&MatchPredicate{Matcher: &LabelMatcher{Key: "span.b", Op: MatchEQ, Value: "2"}},
+			},
+		}}
+		if got := spanset.String(); !strings.Contains(got, "OR") {
+			t.Errorf("String() = %q, want the disjunction shown", got)
+		}
+	})
+
+	t.Run("round trips through JSON", func(t *testing.T) {
+		// The Filters field is an interface, so it needs the discriminator the
+		// predicate types marshal. Losing it would silently drop every filter.
+		spanset := &SpansetSelector{Filters: &LogicalPredicate{
+			Op: LogicalAnd,
+			Operands: []Predicate{
+				&MatchPredicate{Matcher: &LabelMatcher{Key: "span.a", Op: MatchEQ, Value: "1"}},
+			},
+		}}
+		data, err := json.Marshal(spanset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored SpansetSelector
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got, want := restored.String(), spanset.String(); got != want {
+			t.Errorf("round trip = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("reached by both traversals through a data source", func(t *testing.T) {
+		query := &Query{
+			Signal: SignalSpan,
+			Source: &DataSource{Spanset: &SpansetSelector{Filters: &MatchPredicate{
+				Matcher: &LabelMatcher{Key: "span.a", Op: MatchEQ, Value: "1"},
+			}}},
+		}
+		var paths []string
+		InspectPath(query, "Query", func(path string, _ Node) bool {
+			paths = append(paths, path)
+			return true
+		})
+		for _, want := range []string{
+			"Query.Source.Spanset",
+			"Query.Source.Spanset.Filters",
+			"Query.Source.Spanset.Filters.Matcher",
+		} {
+			if !slices.Contains(paths, want) {
+				t.Errorf("no node reached at %q; got %v", want, paths)
+			}
+		}
+	})
+}
+
+// TestStructuralStage covers the trace-tree relationship, which is not a join:
+// a join correlates on values the query names, this on structure nothing
+// records.
+func TestStructuralStage(t *testing.T) {
+	for _, op := range []StructuralOp{StructuralChild, StructuralDescendant, StructuralSibling} {
+		t.Run(op.String(), func(t *testing.T) {
+			parsed, err := ParseStructuralOp(strings.ToLower(op.String()))
+			if err != nil {
+				t.Fatalf("ParseStructuralOp: %v", err)
+			}
+			if parsed != op {
+				t.Errorf("ParseStructuralOp round trip = %v, want %v", parsed, op)
+			}
+
+			stage := &StructuralStage{Op: op, Right: &Query{Signal: SignalSpan}}
+			if stage.StageKind() != StageKindStructural {
+				t.Errorf("StageKind() = %v", stage.StageKind())
+			}
+			if got := stage.String(); !strings.Contains(got, op.String()) {
+				t.Errorf("String() = %q, want it to name the operator", got)
+			}
+
+			data, err := json.Marshal(stage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), `"kind":"STRUCTURAL"`) {
+				t.Errorf("the stage should carry its discriminator: %s", data)
+			}
+			if !strings.Contains(string(data), `"op":"`+op.String()+`"`) {
+				t.Errorf("the operator should serialize by name: %s", data)
+			}
+		})
+	}
+
+	t.Run("child and descendant are distinct", func(t *testing.T) {
+		// The transitive closure is a different relationship, and conflating
+		// them would widen every child query.
+		if StructuralChild == StructuralDescendant {
+			t.Fatal("child and descendant must not share an ordinal")
+		}
+	})
+
+	t.Run("a pipeline round trips through JSON", func(t *testing.T) {
+		pipeline := Pipeline{&StructuralStage{Op: StructuralSibling}}
+		data, err := json.Marshal(pipeline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored Pipeline
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		stage, ok := restored[0].(*StructuralStage)
+		if !ok {
+			t.Fatalf("restored[0] = %T, want *StructuralStage", restored[0])
+		}
+		if stage.Op != StructuralSibling {
+			t.Errorf("Op = %v, want SIBLING", stage.Op)
+		}
+	})
+}
+
+// TestCoercionStage covers the explicit cast QLS Attributes describes.
+func TestCoercionStage(t *testing.T) {
+	stage := &CoercionStage{Attribute: "span.http.status_code", TargetType: DataTypeSignedInt}
+
+	if stage.StageKind() != StageKindCoercion {
+		t.Errorf("StageKind() = %v", stage.StageKind())
+	}
+	if got := stage.String(); !strings.Contains(got, "span.http.status_code") ||
+		!strings.Contains(got, "SIGNED_INT") {
+		t.Errorf("String() = %q, want the attribute and the target type", got)
+	}
+
+	data, err := json.Marshal(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"kind":"COERCION"`) {
+		t.Errorf("the stage should carry its discriminator: %s", data)
+	}
+
+	var restored Pipeline
+	if err := json.Unmarshal([]byte("["+string(data)+"]"), &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, ok := restored[0].(*CoercionStage); !ok || got.Attribute != stage.Attribute {
+		t.Errorf("restored[0] = %#v, want the stage back", restored[0])
+	}
+}
+
+// TestQlsSpanKindCoversOTel pins the enum against the OpenTelemetry model the
+// QLS spec follows, and against the zero value the IR relies on.
+func TestQlsSpanKindCoversOTel(t *testing.T) {
+	for _, name := range []string{
+		"UNSPECIFIED", "INTERNAL", "SERVER", "CLIENT", "PRODUCER", "CONSUMER",
+	} {
+		kind, err := ParseQlsSpanKind(name)
+		if err != nil {
+			t.Errorf("ParseQlsSpanKind(%q): %v", name, err)
+			continue
+		}
+		if got := kind.String(); got != name {
+			t.Errorf("round trip = %q, want %q", got, name)
+		}
+	}
+
+	// The zero value must be UNSPECIFIED. A span whose kind was never stated is
+	// not a client span, and making the zero value say so would have a TraceQL
+	// emitter write "kind = client" for a query that named no kind at all.
+	var zero QlsSpanKind
+	if zero != SpanKindUnspecified {
+		t.Errorf("the zero value is %s, want UNSPECIFIED", zero)
+	}
+	// The spec's own default for a constructed span is still INTERNAL.
+	if DefaultSpanKind != SpanKindInternal {
+		t.Errorf("DefaultSpanKind = %s, want INTERNAL", DefaultSpanKind)
+	}
+}
+
+// TestFlatLabelName covers the fold both the validator and the emitters depend
+// on. They have to agree: one reports the rewrite and the other performs it, and
+// a disagreement would mean a note describing something other than what was
+// written.
+func TestFlatLabelName(t *testing.T) {
+	cases := []struct {
+		key     string
+		want    string
+		changed bool
+	}{
+		{"span.http.status_code", "span_http_status_code", true},
+		{"resource.service.name", "resource_service_name", true},
+		{"duration", "duration", false},
+		{"job", "job", false},
+		{"__name__", "__name__", false},
+		{"a-b", "a_b", true},
+		{"1st", "_1st", true},
+		{"", "", false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.key, func(t *testing.T) {
+			got, changed := FlatLabelName(c.key)
+			if got != c.want || changed != c.changed {
+				t.Errorf("FlatLabelName(%q) = (%q, %v), want (%q, %v)",
+					c.key, got, changed, c.want, c.changed)
+			}
+		})
 	}
 }

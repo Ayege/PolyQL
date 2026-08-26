@@ -1,0 +1,12 @@
+name: count metric extraction
+description: count() over a span set, with a grouping clause.
+source_dsl: traceql
+target_dsl: traceql
+input: 'count() over ({span.error = true}) by (resource.service.name)'
+expected_output: 'count() over ({ span.error = true }) by (resource.service.name)'
+expected_fidelity_score: 1.0
+notes: >
+  TraceQL writes aggregation prefix, with its operand introduced by "over",
+  where PromQL and LogQL both wrap the operand in the call. There is no window:
+  the range comes from the request, which is why the IR carries no Window for
+  this query and the emitter writes none.

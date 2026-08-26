@@ -21,6 +21,11 @@ classDiagram
         +string name
         +Scope scope
         +Selector[] selectors
+        +SpansetSelector spanset
+    }
+
+    class SpansetSelector {
+        +Predicate filters
     }
 
     class Scope {
@@ -57,6 +62,26 @@ classDiagram
         IS_NOT_NULL
         CONTAINS
         NOT_CONTAINS
+    }
+
+    class Predicate {
+        <<interface>>
+    }
+
+    class MatchPredicate {
+        +LabelMatcher matcher
+    }
+
+    class LogicalPredicate {
+        +LogicalOp op
+        +Predicate[] operands
+    }
+
+    class LogicalOp {
+        <<enumeration>>
+        AND
+        OR
+        NOT
     }
 
     class Pipeline {
@@ -110,6 +135,25 @@ classDiagram
         +QlsDataType returnType
     }
 
+    class IRExpr {
+        <<interface>>
+    }
+
+    class LiteralExpr {
+        +QlsDataType type
+        +any value
+    }
+
+    class RefExpr {
+        +string name
+        +Scope scope
+        +QlsDataType type
+    }
+
+    class QueryExpr {
+        +Query query
+    }
+
     class JoinStage {
         +JoinType joinType
         +string[] onLabels
@@ -122,6 +166,28 @@ classDiagram
         +ArithOp op
         +Query left
         +Query right
+    }
+
+    class UnaryOpStage {
+        +ArithOp op
+        +Query operand
+    }
+
+    class StructuralStage {
+        +StructuralOp op
+        +Query right
+    }
+
+    class StructuralOp {
+        <<enumeration>>
+        CHILD
+        DESCENDANT
+        SIBLING
+    }
+
+    class CoercionStage {
+        +string attribute
+        +QlsDataType targetType
     }
 
     class ArithOp {
@@ -141,6 +207,8 @@ classDiagram
         GTE
         LT
         LTE
+        NEG
+        POS
     }
 
     class JoinType {
@@ -176,6 +244,17 @@ classDiagram
     class Interval {
         +int64 nanos
         +string sourceText
+    }
+
+    class Timestamp {
+        +int64 unixNano
+    }
+
+    class SortOrder {
+        <<enumeration>>
+        NONE
+        ASC
+        DESC
     }
 
     class WindowAlignment {
@@ -225,11 +304,12 @@ classDiagram
 
     class QlsSpanKind {
         <<enumeration>>
-        CLIENT
+        UNSPECIFIED
+        INTERNAL
         SERVER
+        CLIENT
         PRODUCER
         CONSUMER
-        INTERNAL
     }
 
     class TranslatabilityFlag {
@@ -244,12 +324,25 @@ classDiagram
         +string reason
     }
 
+    class SignalMismatchInfo {
+        +SignalType sourceSignal
+        +string targetSignals
+        +string message
+    }
+
     Query --> SignalType
     Query --> DataSource
     Query --> Pipeline
     Query --> Output
     DataSource --> Scope
     DataSource --> Selector
+    DataSource --> SpansetSelector
+    SpansetSelector --> Predicate : filters
+    Predicate <|-- MatchPredicate
+    Predicate <|-- LogicalPredicate
+    MatchPredicate --> LabelMatcher
+    LogicalPredicate --> LogicalOp
+    LogicalPredicate --> Predicate : operands
     Selector --> LabelMatcher
     LabelMatcher --> MatchOp
     Pipeline --> PipelineStage
@@ -258,15 +351,36 @@ classDiagram
     PipelineStage <|-- FunctionStage
     PipelineStage <|-- JoinStage
     PipelineStage <|-- BinaryOpStage
+    PipelineStage <|-- UnaryOpStage
+    PipelineStage <|-- StructuralStage
+    PipelineStage <|-- CoercionStage
+    FilterStage --> Predicate
     AggregationStage --> AggOp
     AggregationStage --> AggScope
+    AggregationStage --> IRExpr : parameter
+    IRExpr <|-- LiteralExpr
+    IRExpr <|-- RefExpr
+    IRExpr <|-- QueryExpr
+    LiteralExpr --> QlsDataType
+    RefExpr --> Scope
+    RefExpr --> QlsDataType
+    QueryExpr --> Query
+    FunctionStage --> IRExpr : args
     FunctionStage --> QlsDataType
     JoinStage --> JoinType
     BinaryOpStage --> ArithOp
     BinaryOpStage --> Query : left, right
+    UnaryOpStage --> ArithOp
+    UnaryOpStage --> Query : operand
+    StructuralStage --> StructuralOp
+    StructuralStage --> Query : right
+    CoercionStage --> QlsDataType
     Output --> TimeRange
+    Output --> SortOrder
     Output --> Window
+    TimeRange --> Timestamp : start, end
     Window --> WindowAlignment
     Window --> Interval : step, offset
     Output --> Interval : subqueryRange, subqueryStep
     IRNode --> TranslatabilityFlag
+    SignalMismatchInfo --> SignalType

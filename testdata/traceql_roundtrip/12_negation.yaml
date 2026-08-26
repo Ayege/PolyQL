@@ -1,0 +1,12 @@
+name: negated filter
+description: A logical NOT over a grouped predicate.
+source_dsl: traceql
+target_dsl: traceql
+input: '{!(.error = true)}'
+expected_output: '{ !(.error = true) }'
+expected_fidelity_score: 1.0
+notes: >
+  Distinct from "{.error != true}", which is a comparison rather than a
+  connective: the negation applies to the whole predicate, and its operand is
+  always parenthesised on the way out rather than relying on a reader to know
+  the precedence.

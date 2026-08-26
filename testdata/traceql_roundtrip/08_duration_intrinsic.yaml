@@ -1,0 +1,12 @@
+name: duration comparison
+description: An ordered comparison against a sub-second duration.
+source_dsl: traceql
+target_dsl: traceql
+input: '{duration > 100ms && duration < 2s}'
+expected_output: '{ duration > 100ms && duration < 2s }'
+expected_fidelity_score: 1.0
+notes: >
+  Span durations are routinely sub-second, so the units below a second matter
+  here in a way they do not for a metric range. The source spelling is kept
+  rather than the parsed nanosecond count, which is what stops "100ms" coming
+  back as "0.1s".

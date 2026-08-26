@@ -10,3 +10,4 @@ package registry
 
 //go:generate cp ../../registry/promql.yaml data/promql.yaml
 //go:generate cp ../../registry/logql.yaml data/logql.yaml
+//go:generate cp ../../registry/traceql.yaml data/traceql.yaml

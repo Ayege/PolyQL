@@ -1,0 +1,11 @@
+name: temporal aggregation into traceql
+description: A count over time, which TraceQL can only do across spans.
+source_dsl: logql
+target_dsl: traceql
+input: 'sum by (level) (count_over_time({app="web"}[5m]))'
+notes: >
+  TraceQL has COUNT, but only on the group axis: there is no window in a
+  TraceQL query to aggregate over, so every aggregation collapses across spans.
+  Asking for it on the temporal axis is therefore an approximation rather than a
+  refusal, and the report says the axis changed instead of pretending the
+  count means the same thing.

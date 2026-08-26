@@ -1,0 +1,14 @@
+name: 'group aggregation over a rate'
+description: 'The same aggregation, with the range aggregation that makes it writable.'
+source_dsl: promql
+target_dsl: logql
+input: 'sum(rate(http_requests_total[5m]))'
+expected_output: 'sum(rate({__name__="http_requests_total"}[5m]))'
+expected_flags:
+  - path: 'Query.Pipeline[1].AggregationStage'
+    flag: FULL
+notes: >
+  The counterpart to the bare aggregation case. A rate has produced samples, so
+  the sum has something to reduce and translates exactly. Keeping both cases
+  pins the boundary: the check must fire on the first and stay silent here, or
+  it is either useless or a false alarm on every valid query.

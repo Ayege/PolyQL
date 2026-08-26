@@ -6,13 +6,13 @@ C4Container
     System_Boundary(polyql, "PolyQL system") {
 
         Container(cli, "CLI", "Go binary", "polyql translate — single query or file input, emits translated query + fidelity report to stdout/file")
-        Container(proxy, "Federation proxy", "Go, gRPC + HTTP", "Accepts a query in source DSL, translates via IR, forwards to target backend, returns results. Supports PromQL-compatible /api/v1/query endpoint.")
-        Container(dashxlate, "Dashboard translator", "Go binary", "Reads Grafana dashboard JSON, translates all panel expressions from source DSL to target DSL, outputs new dashboard JSON + per-panel fidelity report")
+        Container(proxy, "Federation proxy [PLANNED]", "Go, gRPC + HTTP", "NOT YET IMPLEMENTED — cmd/polyql-proxy and pkg/proxy are empty placeholders. Planned: accept a query in the source DSL, translate via the IR, forward to the target backend and return its results, behind backend-compatible endpoints (/api/v1/query for Prometheus, /loki/api/v1/query_range for Loki, /api/traces for Tempo).")
+        Container(dashxlate, "Dashboard translator", "Go, polyql subcommand", "polyql dashboard translate — reads a Grafana dashboard from a file or straight from an instance over its HTTP API (read-only; nothing is ever written back to Grafana), translates every panel expression from the source DSL to the target, and writes a new dashboard plus a per-panel fidelity report (text, JSON or Markdown). Only the expressions change; layout, datasources, templating and every other field are written back untouched and in order. It ships inside the polyql binary rather than as a separate one.")
 
         Container(compiler, "Core compiler library", "Go package", "Shared library imported by CLI, proxy, and dashboard translator. Houses parser registry, resolver, IR builder, validator, emitter registry, and fidelity reporter.")
 
-        ContainerDb(langreg, "Language registry", "YAML/JSON files", "Data-driven DSL definitions: operator mappings, function catalogs, type coercion rules, aggregation semantics. One file per supported DSL.")
-        Container(otel, "OTel exporter", "Go, OTLP", "Emits OpenTelemetry spans for every translation: source DSL, target DSL, IR node count, fidelity score, latency.")
+        ContainerDb(langreg, "Language registry", "YAML files", "Data-driven DSL definitions, one file per supported DSL: registry/promql.yaml, registry/logql.yaml, registry/traceql.yaml. Each declares operator mappings, a function catalog, type coercion rules, aggregation semantics, and the capabilities the validator reads to decide what a target cannot express.")
+        Container(otel, "OTel exporter [PLANNED]", "Go, OTLP", "NOT YET IMPLEMENTED — the module has no OpenTelemetry dependency. Planned: emit a span per translation carrying source DSL, target DSL, IR node count, fidelity score and latency.")
     }
 
     System_Ext(grafana, "Grafana", "Dashboard JSON source")
@@ -21,12 +21,15 @@ C4Container
     Rel(user, cli, "Runs", "Shell / CI")
     Rel(user, proxy, "Sends queries", "gRPC / HTTP")
     Rel(user, dashxlate, "Passes dashboard JSON", "CLI")
-    Rel(dashxlate, grafana, "Reads dashboard JSON", "HTTP API")
+    Rel(dashxlate, grafana, "Reads dashboard JSON", "HTTP API, read-only; or --input file")
     Rel(cli, compiler, "Calls", "Go import")
     Rel(proxy, compiler, "Calls", "Go import")
     Rel(dashxlate, compiler, "Calls", "Go import")
     Rel(compiler, langreg, "Loads DSL definitions", "File read at startup")
     Rel(compiler, otel, "Emits translation spans", "OTLP")
     Rel(proxy, backends, "Forwards translated query", "Backend-native API")
+
+    UpdateElementStyle(proxy, $fontColor="grey", $bgColor="white", $borderColor="grey")
+    UpdateElementStyle(otel, $fontColor="grey", $bgColor="white", $borderColor="grey")
 
     UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

@@ -116,7 +116,16 @@ jobs:
           ./polyql version
           ./polyql registry list
           ./polyql translate --from promql --to logql --query 'up'
-          ./polyql dashboard translate --from promql --to logql --input testdata/dashboards/sample_promql.json --format json > /dev/null
+          ./polyql translate --from traceql --to traceql --query '{span.http.status_code = 500}'
+          ./polyql translate --from traceql --to logql --query '{resource.service.name = "web"}'
+          # Piped input: documented since the first commit, implemented later.
+          # A smoke step is what stops it regressing back into a claim.
+          printf 'up\nrate(x[5m])\n' | ./polyql translate --from promql --to promql --format query-only
+          echo 'up' | ./polyql translate --from promql --to logql --file - --format query-only
+          # The report format is --report-format; the dashboard command has no
+          # --format of its own, and using one silently never ran here because
+          # this job was gated behind jobs that were failing.
+          ./polyql dashboard translate --from promql --to logql --input testdata/dashboards/sample_promql.json --report-format json > /dev/null
 
       - name: verify exit codes
         run: |

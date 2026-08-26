@@ -1,0 +1,12 @@
+name: duration comparison into promql
+description: An ordered comparison on an intrinsic, which no PromQL selector takes.
+source_dsl: traceql
+target_dsl: promql
+input: '{duration > 100ms}'
+expects_no_query: true
+notes: >
+  PromQL has ">" but it compares a series' value, not a label, so there is no
+  selector form to fall back to — and with the one matcher dropped there is
+  nothing left to name. A query duration has no PromQL equivalent at all: it is
+  a property of a span, not a series. The emitter writes notes and no query,
+  which is the honest answer rather than an invented selector.

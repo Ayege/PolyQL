@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,11 +15,20 @@ import (
 	"github.com/polyql/polyql/pkg/dashboard"
 )
 
+// grafanaTokenEnv is where a Grafana token is read from.
+//
+// It is an environment variable rather than a flag on purpose: an argument is
+// visible in shell history and to anything that can list processes, and a
+// dashboard-reading token is still a credential.
+const grafanaTokenEnv = "GRAFANA_TOKEN"
+
 type dashboardOptions struct {
 	*options
 	from          string
 	to            string
 	input         string
+	grafanaURL    string
+	dashboardUID  string
 	output        string
 	report        string
 	reportFormat  string
@@ -46,6 +56,9 @@ func newDashboardTranslateCommand(opts *options) *cobra.Command {
 		Short: "Translate every panel expression in a dashboard",
 		Long: "Translate reads a Grafana dashboard, rewrites each panel's query into the\n" +
 			"target language, and writes a report of what each panel cost.\n\n" +
+			"The dashboard comes from a file given with --input, or straight from a Grafana\n" +
+			"instance with --grafana-url and --dashboard-uid. Fetching is read-only: the\n" +
+			"translated dashboard is written to --output or stdout, never back to Grafana.\n\n" +
 			"Only the expressions change. Layout, datasources, field configuration,\n" +
 			"annotations, templating and anything else the document carries are written\n" +
 			"back untouched and in their original order, so the result diffs against the\n" +
@@ -56,14 +69,23 @@ func newDashboardTranslateCommand(opts *options) *cobra.Command {
 			"    --input my-dashboard.json --output translated.json \\\n" +
 			"    --report report.md --report-format markdown\n\n" +
 			"  # Preview without writing anything.\n" +
-			"  polyql dashboard translate --from promql --to logql --input my-dashboard.json",
+			"  polyql dashboard translate --from promql --to logql --input my-dashboard.json\n\n" +
+			"  # Fetch straight from a Grafana instance.\n" +
+			"  export GRAFANA_TOKEN=glsa_...\n" +
+			"  polyql dashboard translate --from promql --to logql \\\n" +
+			"    --grafana-url https://grafana.example.com --dashboard-uid abc123",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error { return d.run() },
 	}
 
 	cmd.Flags().StringVar(&d.from, "from", "", "source language (required)")
 	cmd.Flags().StringVar(&d.to, "to", "", "target language (required)")
-	cmd.Flags().StringVar(&d.input, "input", "", "dashboard JSON to read (required)")
+	cmd.Flags().StringVar(&d.input, "input", "",
+		"dashboard JSON file to read; alternatively use --grafana-url with --dashboard-uid")
+	cmd.Flags().StringVar(&d.grafanaURL, "grafana-url", "",
+		"Grafana root to fetch the dashboard from, such as https://grafana.example.com")
+	cmd.Flags().StringVar(&d.dashboardUID, "dashboard-uid", "",
+		"UID of the dashboard to fetch from --grafana-url")
 	cmd.Flags().StringVarP(&d.output, "output", "o", "",
 		`write the translated dashboard here; "-" or unset means stdout`)
 	cmd.Flags().StringVar(&d.report, "report", "",
@@ -77,7 +99,10 @@ func newDashboardTranslateCommand(opts *options) *cobra.Command {
 
 	_ = cmd.MarkFlagRequired("from")
 	_ = cmd.MarkFlagRequired("to")
-	_ = cmd.MarkFlagRequired("input")
+	// --input is not marked required: a dashboard may instead be fetched by UID.
+	// Which sources are legal is decided in one place, in readDashboard.
+	cmd.MarkFlagsMutuallyExclusive("input", "grafana-url")
+	cmd.MarkFlagsRequiredTogether("grafana-url", "dashboard-uid")
 
 	return cmd
 }
@@ -98,7 +123,7 @@ func (d *dashboardOptions) run() error {
 	}
 	d.debugf("loaded %s", strings.Join(reg.List(), ", "))
 
-	dash, err := dashboard.ReadDashboard(d.input)
+	dash, err := d.readDashboard()
 	if err != nil {
 		return fatalf("%s", err)
 	}
@@ -134,6 +159,36 @@ func (d *dashboardOptions) run() error {
 		return fidelityFailure
 	}
 	return nil
+}
+
+// readDashboard loads the dashboard from whichever source the flags named.
+func (d *dashboardOptions) readDashboard() (*dashboard.Dashboard, error) {
+	switch {
+	case d.input != "":
+		return dashboard.ReadDashboard(d.input)
+
+	case d.grafanaURL != "":
+		token := os.Getenv(grafanaTokenEnv)
+		if token == "" {
+			// An anonymous Grafana exists, so this is a warning rather than a
+			// refusal — but an unauthenticated fetch against the usual
+			// installation fails with a 401 that is much harder to read than
+			// this line.
+			d.debugf("%s is not set; fetching %s anonymously", grafanaTokenEnv, d.grafanaURL)
+		}
+		client := &dashboard.GrafanaClient{BaseURL: d.grafanaURL, Token: token}
+
+		ctx, cancel := context.WithTimeout(context.Background(), dashboard.DefaultGrafanaTimeout)
+		defer cancel()
+
+		d.debugf("fetching dashboard %s from %s", d.dashboardUID, d.grafanaURL)
+		return client.Dashboard(ctx, d.dashboardUID)
+
+	default:
+		return nil, fmt.Errorf("give a dashboard file with --input, "+
+			"or fetch one with --grafana-url and --dashboard-uid (token from %s)",
+			grafanaTokenEnv)
+	}
 }
 
 func (d *dashboardOptions) writeDashboard(result *dashboard.TranslateResult) error {

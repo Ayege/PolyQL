@@ -1,0 +1,12 @@
+name: stream selector into traceql
+description: Flat log stream labels becoming unscoped span attributes.
+source_dsl: logql
+target_dsl: traceql
+input: '{app="web"}'
+expected_output: '{ .app = "web" }'
+notes: >
+  Every construct carries: a label matcher becomes an attribute comparison, and
+  the leading dot is TraceQL's way of saying the scope is unknown. What does not
+  carry is the meaning — this now selects spans rather than log lines — and the
+  signal mismatch is what records that, kept apart from the fidelity score on
+  purpose.

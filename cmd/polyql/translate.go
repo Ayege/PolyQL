@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -62,13 +63,16 @@ func newTranslateCommand(opts *options) *cobra.Command {
 		Short: "Translate a query from one language to another",
 		Long: "Translate reads a query in one language and writes it in another, together\n" +
 			"with a report of what the target could not express.\n\n" +
+			"The query comes from --query, from a file of them given with --file, or from\n" +
+			"stdin when neither is named and something is piped in.\n\n" +
 			"It exits 0 when the translation is exact, 1 when something was lost, and 2\n" +
 			"when the command could not run — so a CI job can gate on fidelity without\n" +
 			"parsing the output.",
 		Example: "  polyql translate --from promql --to logql \\\n" +
 			"    --query 'rate(http_requests_total{status=\"500\"}[5m])'\n\n" +
 			"  polyql translate --from logql --to promql --file queries.txt --format json\n\n" +
-			"  polyql translate --from promql --to logql --query 'up' --format query-only",
+			"  polyql translate --from promql --to logql --query 'up' --format query-only\n\n" +
+			"  cat queries.txt | polyql translate --from logql --to promql",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return t.run() },
 	}
@@ -76,7 +80,7 @@ func newTranslateCommand(opts *options) *cobra.Command {
 	cmd.Flags().StringVar(&t.from, "from", "", "source language (required)")
 	cmd.Flags().StringVar(&t.to, "to", "", "target language (required)")
 	cmd.Flags().StringVar(&t.query, "query", "", "query to translate")
-	cmd.Flags().StringVar(&t.file, "file", "", "file of queries, one per line")
+	cmd.Flags().StringVar(&t.file, "file", "", `file of queries, one per line; "-" reads stdin`)
 	cmd.Flags().StringVarP(&t.output, "output", "o", "", "write to this file instead of stdout")
 	cmd.Flags().StringVar(&t.format, "format", formatText,
 		"output format: text, json, or query-only")
@@ -131,9 +135,10 @@ func (t *translateOptions) run() error {
 
 	// A single query that would not translate is a failed command, so its
 	// message goes to stderr and nothing is written to the output stream. A
-	// file is different: one bad line should not discard the other results, so
-	// those failures are reported per query alongside them.
-	if t.file == "" && len(results) == 1 && results[0].Error != "" {
+	// stream of them — a file, or a pipe — is different: one bad line should not
+	// discard the other results, so those failures are reported per query
+	// alongside them.
+	if t.isSingleQuery() && len(results) == 1 && results[0].Error != "" {
 		return fatalf("%s", results[0].Error)
 	}
 	t.debugf("translated %d quer%s in %s", len(results), plural(len(results)), time.Since(started).Round(time.Microsecond))
@@ -159,8 +164,12 @@ func (t *translateOptions) run() error {
 }
 
 func (t *translateOptions) validateFlags() error {
-	if t.query == "" && t.file == "" {
-		return fatalf("give a query with --query or a file of queries with --file")
+	// Nothing named on the command line is fine when a query is being piped in,
+	// which is what makes "cat queries.txt | polyql translate ..." work. With no
+	// pipe either, there is genuinely nothing to translate.
+	if t.query == "" && t.file == "" && t.stdin == nil {
+		return fatalf("give a query with --query, a file of queries with --file, " +
+			"or pipe queries in on stdin")
 	}
 	switch t.format {
 	case formatText, formatJSON, formatQueryOnly:
@@ -191,20 +200,34 @@ func (t *translateOptions) checkLanguages(reg *registry.Registry) error {
 	return nil
 }
 
+// isSingleQuery reports whether the caller named exactly one query inline.
+//
+// It is what decides the shape of the output: one inline query renders as a bare
+// result, while a stream of them — from a file or a pipe — renders as a list,
+// because a caller reading a stream cannot know in advance how many will come
+// back. The test is on --query rather than on an empty --file, since an empty
+// --file now means "read stdin" rather than "no source given".
+func (t *translateOptions) isSingleQuery() bool { return t.query != "" }
+
 // inputs collects the queries to translate.
+//
+// Three sources feed it, in the order the flags name them: an inline --query, a
+// --file, or stdin. Stdin is reached either by "--file -", matching the spelling
+// --output already uses for stdout, or by naming no source at all when something
+// is piped in.
 func (t *translateOptions) inputs() ([]string, error) {
 	if t.query != "" {
 		return []string{t.query}, nil
 	}
 
-	file, err := os.Open(t.file)
+	reader, name, closeInput, err := t.inputStream()
 	if err != nil {
-		return nil, fatalf("reading %s: %s", t.file, err)
+		return nil, err
 	}
-	defer file.Close()
+	defer closeInput()
 
 	var queries []string
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
 	// A query can be long, and the default limit would truncate one silently.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -216,12 +239,36 @@ func (t *translateOptions) inputs() ([]string, error) {
 		queries = append(queries, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fatalf("reading %s: %s", t.file, err)
+		return nil, fatalf("reading %s: %s", name, err)
 	}
 	if len(queries) == 0 {
-		return nil, fatalf("%s holds no queries", t.file)
+		return nil, fatalf("%s holds no queries", name)
 	}
 	return queries, nil
+}
+
+// inputStream opens whichever source the flags selected, returning it with a
+// name to blame in an error and a function to close it.
+//
+// Stdin is never closed: it belongs to the process rather than to this command,
+// and closing it would break a caller that goes on to read more.
+func (t *translateOptions) inputStream() (io.Reader, string, func(), error) {
+	noop := func() {}
+
+	if t.file == "" || t.file == "-" {
+		if t.stdin == nil {
+			// Only reachable through "--file -", since validateFlags already
+			// rejected naming no source with nothing piped in.
+			return nil, "", noop, fatalf("--file - reads stdin, but nothing was piped in")
+		}
+		return t.stdin, "stdin", noop, nil
+	}
+
+	file, err := os.Open(t.file)
+	if err != nil {
+		return nil, "", noop, fatalf("reading %s: %s", t.file, err)
+	}
+	return file, t.file, func() { _ = file.Close() }, nil
 }
 
 // translateOne runs the pipeline over one query and reports the exit code it

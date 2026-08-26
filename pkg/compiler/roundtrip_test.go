@@ -21,8 +21,10 @@ import (
 
 	_ "github.com/polyql/polyql/pkg/compiler/emitter/logql"
 	_ "github.com/polyql/polyql/pkg/compiler/emitter/promql"
+	_ "github.com/polyql/polyql/pkg/compiler/emitter/traceql"
 	_ "github.com/polyql/polyql/pkg/compiler/parser/logql"
 	_ "github.com/polyql/polyql/pkg/compiler/parser/promql"
+	_ "github.com/polyql/polyql/pkg/compiler/parser/traceql"
 )
 
 // testdataDir holds the corpus, one YAML file per case.
@@ -54,6 +56,17 @@ type TestCase struct {
 	// the check.
 	ExpectedFidelityScore *float64       `yaml:"expected_fidelity_score"`
 	ExpectedFlags         []ExpectedFlag `yaml:"expected_flags"`
+	// ExpectsNoQuery marks a translation where the target can write nothing at
+	// all, so the emitter produces notes and no query.
+	//
+	// It exists because the alternative is worse. A target that cannot express
+	// any part of a query could be made to emit something parseable — an empty
+	// selector, say — but that would be a silent lie about what the translation
+	// achieved. Emitting only the notes is the honest outcome, and this field
+	// lets a case say so out loud instead of the corpus quietly avoiding the
+	// shape. A case setting it still asserts its flags, so what was lost is
+	// pinned as precisely as anywhere else.
+	ExpectsNoQuery bool `yaml:"expects_no_query"`
 	// Bidirectional additionally translates the output back and compares the two
 	// IR trees.
 	Bidirectional bool   `yaml:"bidirectional"`
@@ -364,6 +377,21 @@ func (c TestCase) checkFlags(t *testing.T, result *translation) {
 func (c TestCase) checkReparses(t *testing.T, result *translation) {
 	t.Helper()
 
+	if c.ExpectsNoQuery {
+		// The case asserts that the target can write nothing. What has to hold
+		// is that nothing is what was written, and that the emitter said why —
+		// a silent empty result would be the failure, not the empty result.
+		if result.output != "" {
+			t.Errorf("%s\n  input: %s\n  expected no query, got: %s",
+				c.Name, c.Input, result.output)
+		}
+		if !strings.Contains(result.text, "UNSUPPORTED") {
+			t.Errorf("%s\n  input: %s\n  a translation that produced no query must say why:\n%s",
+				c.Name, c.Input, indent(result.text))
+		}
+		return
+	}
+
 	p, err := parser.Get(c.TargetDSL)
 	if err != nil {
 		t.Fatalf("%s: no parser for %s: %v", c.Name, c.TargetDSL, err)
@@ -491,6 +519,16 @@ func TestCorpusCoverage(t *testing.T) {
 		"promql_to_logql": 20,
 		"logql_to_promql": 15,
 		"bidirectional":   5,
+		// TraceQL's groups are smaller on purpose. Its round-trip group carries
+		// the language's own constructs, while the cross-language groups exist
+		// mainly to pin what is lost — there are only so many distinct ways a
+		// span query fails to be a metric query, and repeating them would pad
+		// the corpus without covering anything new.
+		"traceql_roundtrip": 10,
+		"traceql_to_logql":  5,
+		"traceql_to_promql": 4,
+		"promql_to_traceql": 4,
+		"logql_to_traceql":  3,
 	}
 	for group, want := range minimums {
 		if counts[group] < want {
@@ -519,14 +557,40 @@ func TestCorpusCoverage(t *testing.T) {
 		}
 	})
 
-	t.Run("both directions are covered", func(t *testing.T) {
+	t.Run("every pairing is covered", func(t *testing.T) {
 		directions := map[string]bool{}
 		for _, testCase := range cases {
 			directions[testCase.SourceDSL+"->"+testCase.TargetDSL] = true
 		}
-		for _, want := range []string{"promql->logql", "logql->promql"} {
+		for _, want := range []string{
+			"promql->logql", "logql->promql",
+			"traceql->logql", "traceql->promql",
+			"promql->traceql", "logql->traceql",
+			// TraceQL into itself is the control for the others: it isolates
+			// what the parser and emitter do from any cross-language loss.
+			"traceql->traceql",
+		} {
 			if !directions[want] {
 				t.Errorf("no case covers %s", want)
+			}
+		}
+	})
+
+	// TestCorpusCoverage deliberately does not require a bidirectional TraceQL
+	// case. Round-tripping a query through TraceQL and back is not expected to
+	// preserve it: a span set and a metric series are different things, so the
+	// return trip has nothing to rebuild the lost half from. The traceql->traceql
+	// group covers what round-tripping can honestly mean here, which is that the
+	// language's own constructs survive their own parser and emitter.
+	t.Run("no traceql case claims to be bidirectional", func(t *testing.T) {
+		for _, testCase := range cases {
+			if !testCase.Bidirectional {
+				continue
+			}
+			if testCase.SourceDSL == "traceql" || testCase.TargetDSL == "traceql" {
+				t.Errorf("%s marks a TraceQL translation bidirectional; the semantic gap "+
+					"between spans and metrics or logs means the return trip cannot "+
+					"reconstruct what the first leg dropped", testCase.file)
 			}
 		}
 	})

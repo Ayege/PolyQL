@@ -1,0 +1,18 @@
+name: rate into traceql
+description: A temporal aggregation over a range, neither of which TraceQL has.
+source_dsl: promql
+target_dsl: traceql
+input: 'rate(http_requests_total[5m])'
+expected_output: '{}'
+expected_flags:
+  - path: Query.Pipeline[0].AggregationStage
+    flag: UNSUPPORTED
+  - path: Query.Output.Window
+    flag: UNSUPPORTED
+notes: >
+  Two independent losses, and the report names both. TraceQL has no rate on any
+  axis, and no range selector to compute one over — Tempo takes its time range
+  as request parameters, so the 5m has nowhere to go in the query text. A
+  translation that dropped the window quietly would read whatever range the
+  caller happened to ask for, which is a difference in results rather than in
+  spelling.

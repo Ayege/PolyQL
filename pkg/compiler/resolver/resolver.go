@@ -34,6 +34,7 @@ import (
 	"github.com/polyql/polyql/pkg/compiler/ir"
 	"github.com/polyql/polyql/pkg/compiler/parser/logql"
 	"github.com/polyql/polyql/pkg/compiler/parser/promql"
+	"github.com/polyql/polyql/pkg/compiler/parser/traceql"
 	"github.com/polyql/polyql/pkg/registry"
 )
 
@@ -95,6 +96,8 @@ func Resolve(node ast.Node, sourceDSL string, reg *registry.Registry) (*ir.Query
 		query, err = (&promqlResolver{def: def}).resolve(typed)
 	case logql.Expr:
 		query, err = (&logqlResolver{def: def}).resolve(typed)
+	case traceql.Expr:
+		query, err = (&traceqlResolver{def: def}).resolve(typed)
 	default:
 		return nil, fmt.Errorf("resolver: no resolver handles AST node type %T (from DSL %q)", node, node.DSL())
 	}

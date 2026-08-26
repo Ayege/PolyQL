@@ -1,0 +1,12 @@
+name: empty spanset
+description: '{} selects every span.'
+source_dsl: traceql
+target_dsl: traceql
+input: '{}'
+expected_output: '{}'
+expected_fidelity_score: 1.0
+notes: >
+  An empty selector still selects. It is a spanset with no predicate rather than
+  the absence of one, which is why the resolver builds a SpansetSelector with a
+  nil Filters instead of leaving Source.Spanset nil. Both other DSLs would
+  reject a selector this empty, so this is a case only TraceQL has.

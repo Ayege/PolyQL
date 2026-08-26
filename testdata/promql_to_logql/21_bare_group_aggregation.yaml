@@ -1,0 +1,16 @@
+name: 'group aggregation with nothing to aggregate'
+description: 'A PromQL sum over a bare selector, which LogQL has no operand for.'
+source_dsl: promql
+target_dsl: logql
+input: 'sum(http_requests_total)'
+expected_output: '{__name__="http_requests_total"}'
+expected_flags:
+  - path: 'Query.Pipeline[0].AggregationStage'
+    flag: UNSUPPORTED
+notes: >
+  LogQL's sum reduces samples, and a stream selector yields log lines, so
+  "sum({__name__=...})" is not a LogQL query — a range aggregation has to turn
+  lines into samples first. The IR records only "collapse across groups", so a
+  per-stage check finds sum on the group axis, sees that LogQL has sum, and
+  would call this FULL while the emitter dropped the aggregation. This case
+  exists to keep the score and the emitted text telling the same story.

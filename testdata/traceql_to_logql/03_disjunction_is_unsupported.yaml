@@ -1,0 +1,16 @@
+name: disjunctive spanset filter
+description: An OR, which a conjunctive stream selector cannot express at all.
+source_dsl: traceql
+target_dsl: logql
+input: '{resource.service.name = "web" || resource.service.name = "api"}'
+expects_no_query: true
+expected_flags:
+  - path: Query.Source.Spanset
+    flag: UNSUPPORTED
+notes: >
+  There is no way to write "either of these labels" inside one LogQL selector.
+  Keeping the operand that did happen to fit would silently narrow the query
+  from "web or api" to "web", so the whole subtree is dropped and reported.
+  Note that a single-attribute disjunction like this one could in principle
+  become a regex alternation; PolyQL does not attempt that, because the general
+  case addresses different attributes and would have no such rewrite.

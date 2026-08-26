@@ -31,6 +31,11 @@ capabilities:
   window_alignments: [UTC_NORMALIZED]
   # LogQL has no bool modifier: a comparison always filters.
   bool_modifier: false
+  # LogQL's vector aggregations reduce samples, and a stream selector yields log
+  # lines: "sum({app=\"x\"})" is not a LogQL query. A range aggregation has to
+  # turn lines into samples first. Saying so is what stops the validator scoring
+  # a translated "sum(metric)" as fully translated while the emitter drops it.
+  group_aggregation_needs_samples: true
 
 aggregation_defaults:
   # QLS §Aggregation, same as every DSL.

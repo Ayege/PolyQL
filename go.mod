@@ -1,6 +1,6 @@
 module github.com/polyql/polyql
 
-go 1.25.8
+go 1.25.13
 
 require (
 	github.com/spf13/cobra v1.10.2

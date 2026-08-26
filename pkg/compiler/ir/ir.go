@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -152,6 +153,10 @@ type DataSource struct {
 	Name      string      `json:"name"`
 	Scope     Scope       `json:"scope"`
 	Selectors []*Selector `json:"selectors,omitempty"`
+	// Spanset holds a boolean filter tree over span attributes, for a source
+	// selected the way TraceQL selects one. See SpansetSelector for why a
+	// Selector cannot stand in for it.
+	Spanset *SpansetSelector `json:"spanset,omitempty"`
 }
 
 func (d *DataSource) String() string {
@@ -164,7 +169,58 @@ func (d *DataSource) String() string {
 	for _, s := range d.Selectors {
 		b.WriteString(s.String())
 	}
+	if d.Spanset != nil {
+		b.WriteString(d.Spanset.String())
+	}
 	return b.String()
+}
+
+// SpansetSelector identifies spans by a boolean expression over their
+// intrinsic, resource and span-scope attributes — QLS §.5 Spans read through
+// §Selection > Predicates.
+//
+// It sits beside DataSource.Selectors rather than replacing them because the two
+// express genuinely different things. A Selector's matchers are conjunctive:
+// every one must hold, which is all PromQL and LogQL can write between their
+// braces. TraceQL's braces hold a full boolean expression, so
+// {span.http.status_code = 500 || span.error = true} has no faithful Selector
+// form — flattening it to a conjunction would silently change which spans match,
+// and lowering it to a regex is not available either, since the operands address
+// different attributes.
+//
+// Scope is not tracked per matcher. An attribute key carries its own prefix —
+// "span.http.status_code", "resource.service.name", or a bare intrinsic such as
+// "duration" — which keeps the IR flat and keeps a matcher comparable across
+// DSLs that have no scoping at all.
+type SpansetSelector struct {
+	IRNode
+	// Filters is the predicate every selected span must satisfy. A nil Filters
+	// is the empty spanset "{}", which selects every span.
+	Filters Predicate `json:"filters,omitempty"`
+}
+
+func (s *SpansetSelector) String() string {
+	if s.Filters == nil {
+		return "{}"
+	}
+	return "{" + s.Filters.String() + "}"
+}
+
+func (s *SpansetSelector) UnmarshalJSON(data []byte) error {
+	type alias SpansetSelector
+	aux := struct {
+		Filters json.RawMessage `json:"filters"`
+		*alias
+	}{alias: (*alias)(s)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	p, err := unmarshalPredicate(aux.Filters)
+	if err != nil {
+		return err
+	}
+	s.Filters = p
+	return nil
 }
 
 // Selector is one set of label matchers applied to a data source. Multiple
@@ -628,10 +684,16 @@ const (
 	StageKindJoin
 	StageKindBinaryOp
 	StageKindUnaryOp
+	// StageKindStructural relates one span set to another by their position in
+	// the trace tree.
+	StageKindStructural
+	// StageKindCoercion reinterprets an attribute's type.
+	StageKindCoercion
 )
 
 var stageKindEnum = newEnumDef[StageKind]("StageKind",
-	"FILTER", "AGGREGATION", "FUNCTION", "JOIN", "BINARY_OP", "UNARY_OP")
+	"FILTER", "AGGREGATION", "FUNCTION", "JOIN", "BINARY_OP", "UNARY_OP",
+	"STRUCTURAL", "COERCION")
 
 func (k StageKind) String() string { return stageKindEnum.String(k) }
 
@@ -684,6 +746,10 @@ func (p *Pipeline) UnmarshalJSON(data []byte) error {
 			stage = &BinaryOpStage{}
 		case StageKindUnaryOp:
 			stage = &UnaryOpStage{}
+		case StageKindStructural:
+			stage = &StructuralStage{}
+		case StageKindCoercion:
+			stage = &CoercionStage{}
 		default:
 			return fmt.Errorf("ir: unknown pipeline stage kind %s", *disc.Kind)
 		}
@@ -1071,6 +1137,98 @@ func (s *UnaryOpStage) MarshalJSON() ([]byte, error) {
 	}{Kind: s.StageKind(), alias: (*alias)(s)})
 }
 
+// StructuralOp relates two span sets by their position in the trace tree.
+//
+// These are not joins. A JoinStage correlates two result sets on attribute
+// values the query names; a structural operator correlates them on the trace
+// structure itself, which no attribute records. QLS §Joins cannot express that,
+// which is why this is an operator of its own rather than a JoinType.
+type StructuralOp int
+
+const (
+	// StructuralChild selects spans whose direct parent is in the left set.
+	StructuralChild StructuralOp = iota
+	// StructuralDescendant selects spans anywhere below the left set, at any
+	// depth. It is the transitive closure of StructuralChild, and the two are
+	// kept apart because a target that can express only one of them must say so.
+	StructuralDescendant
+	// StructuralSibling selects spans sharing a parent with the left set.
+	StructuralSibling
+)
+
+var structuralOpEnum = newEnumDef[StructuralOp]("StructuralOp",
+	"CHILD", "DESCENDANT", "SIBLING")
+
+func (o StructuralOp) String() string { return structuralOpEnum.String(o) }
+
+// ParseStructuralOp resolves a structural operator symbol, case-insensitively.
+func ParseStructuralOp(s string) (StructuralOp, error) { return structuralOpEnum.Parse(s) }
+
+func (o StructuralOp) MarshalJSON() ([]byte, error)  { return structuralOpEnum.marshalJSON(o) }
+func (o *StructuralOp) UnmarshalJSON(b []byte) error { return structuralOpEnum.unmarshalJSON(b, o) }
+
+// StructuralStage narrows the span set so far to those standing in a given
+// relationship to a second span set.
+//
+// Right is the span set on the other side of the operator. It is a whole Query
+// rather than a bare selector because TraceQL admits a filtered, aggregated span
+// set there just as it does on the left.
+type StructuralStage struct {
+	IRNode
+	Op    StructuralOp `json:"op"`
+	Right *Query       `json:"right,omitempty"`
+}
+
+func (s *StructuralStage) StageKind() StageKind { return StageKindStructural }
+func (s *StructuralStage) stageNode()           {}
+
+func (s *StructuralStage) String() string {
+	if s.Right == nil {
+		return "structural " + s.Op.String()
+	}
+	return "structural " + s.Op.String() + " (" + s.Right.String() + ")"
+}
+
+func (s *StructuralStage) MarshalJSON() ([]byte, error) {
+	type alias StructuralStage
+	return json.Marshal(struct {
+		Kind StageKind `json:"kind"`
+		*alias
+	}{Kind: s.StageKind(), alias: (*alias)(s)})
+}
+
+// CoercionStage reinterprets one attribute's value as another type, which
+// QLS §Attributes > Coercion/Casting into Metrics describes.
+//
+// Span attributes arrive as text, so comparing one numerically means saying so.
+// The cast is a stage rather than a property of the matcher because it applies
+// to every later reference to that attribute, not only to the comparison that
+// prompted it — and because a target without the cast loses the whole stage
+// rather than a corner of a predicate.
+type CoercionStage struct {
+	IRNode
+	// Attribute is the key being reinterpreted, carrying its scope prefix as
+	// SpansetSelector describes.
+	Attribute string `json:"attribute"`
+	// TargetType is what the attribute is read as from here on.
+	TargetType QlsDataType `json:"target_type"`
+}
+
+func (s *CoercionStage) StageKind() StageKind { return StageKindCoercion }
+func (s *CoercionStage) stageNode()           {}
+
+func (s *CoercionStage) String() string {
+	return fmt.Sprintf("coerce(%s -> %s)", s.Attribute, s.TargetType)
+}
+
+func (s *CoercionStage) MarshalJSON() ([]byte, error) {
+	type alias CoercionStage
+	return json.Marshal(struct {
+		Kind StageKind `json:"kind"`
+		*alias
+	}{Kind: s.StageKind(), alias: (*alias)(s)})
+}
+
 // SortOrder is the ordering applied to the result set. QLS §.3.0 Metrics orders
 // by end_timestamp ascending by default, and allows that to be overridden, so
 // SortNone means "leave the spec default in place" rather than "unordered".
@@ -1267,6 +1425,14 @@ func Walk(v Visitor, node Node) {
 				Walk(w, s)
 			}
 		}
+		if n.Spanset != nil {
+			Walk(w, n.Spanset)
+		}
+
+	case *SpansetSelector:
+		if n.Filters != nil {
+			Walk(w, n.Filters)
+		}
 
 	case *Selector:
 		for _, m := range n.Matchers {
@@ -1312,6 +1478,14 @@ func Walk(v Visitor, node Node) {
 		if n.Operand != nil {
 			Walk(w, n.Operand)
 		}
+
+	case *StructuralStage:
+		if n.Right != nil {
+			Walk(w, n.Right)
+		}
+
+	case *CoercionStage:
+		// Leaf: it names an attribute and a type, and holds no child node.
 
 	case *MatchPredicate:
 		if n.Matcher != nil {
@@ -1425,6 +1599,35 @@ const (
 	FieldValue = "value"
 )
 
+// flatNameUnsafe matches the characters a single-namespace label name may not
+// contain. PromQL and LogQL both accept [a-zA-Z_][a-zA-Z0-9_]* and nothing else.
+var flatNameUnsafe = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+
+// FlatLabelName folds a scoped attribute key onto one flat label name, reporting
+// whether it had to change.
+//
+// A span attribute is dotted — "span.http.status_code" — and a DSL with a single
+// flat label namespace admits no dot in a name, so a query carrying one would
+// not parse. Replacing each with an underscore is the rule OpenTelemetry's own
+// Prometheus exporter follows, which makes the rewritten name the one the data
+// is most likely already stored under.
+//
+// It lives here rather than in an emitter because both the validator and the
+// emitters need the same answer: one has to report the rewrite, the other has to
+// perform it, and the two disagreeing would mean a note describing something
+// other than what was written.
+func FlatLabelName(key string) (string, bool) {
+	if key == "" {
+		return key, false
+	}
+	safe := flatNameUnsafe.ReplaceAllString(key, "_")
+	// A leading digit is legal in neither language.
+	if safe[0] >= '0' && safe[0] <= '9' {
+		safe = "_" + safe
+	}
+	return safe, safe != key
+}
+
 // Names for IR operations that no DSL function corresponds to. They are
 // structural: every DSL can write arithmetic and literals, so they are not
 // looked up in a language registry.
@@ -1525,6 +1728,14 @@ func InspectPath(root Node, path string, f PathFunc) {
 				InspectPath(selector, fmt.Sprintf("%s.Selectors[%d]", path, i), f)
 			}
 		}
+		if n.Spanset != nil {
+			InspectPath(n.Spanset, path+".Spanset", f)
+		}
+
+	case *SpansetSelector:
+		if n.Filters != nil {
+			InspectPath(n.Filters, path+".Filters", f)
+		}
 
 	case *Selector:
 		for i, matcher := range n.Matchers {
@@ -1570,6 +1781,14 @@ func InspectPath(root Node, path string, f PathFunc) {
 		if n.Operand != nil {
 			InspectPath(n.Operand, path+".Operand", f)
 		}
+
+	case *StructuralStage:
+		if n.Right != nil {
+			InspectPath(n.Right, path+".Right", f)
+		}
+
+	case *CoercionStage:
+		// Leaf, as in Walk.
 
 	case *MatchPredicate:
 		if n.Matcher != nil {

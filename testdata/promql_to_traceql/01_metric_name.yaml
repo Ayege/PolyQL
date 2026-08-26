@@ -1,0 +1,12 @@
+name: metric name into traceql
+description: A named series, which TraceQL has no way to select.
+source_dsl: promql
+target_dsl: traceql
+input: 'up{job="api"}'
+expected_output: '{ .job = "api" }'
+notes: >
+  TraceQL selects spans by attribute, never by a series name, so "up" has
+  nowhere to go. Mapping it onto the span name would claim an equivalence that
+  does not hold — a metric called "up" and a span called "up" are unrelated — so
+  the name is dropped and reported. The label matcher survives as an unscoped
+  attribute, which is TraceQL's "resolve this against every scope".

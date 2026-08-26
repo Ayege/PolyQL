@@ -1,0 +1,14 @@
+name: structural operator into logql
+description: A trace-tree relationship, which no log query can express.
+source_dsl: traceql
+target_dsl: logql
+input: '{resource.service.name = "web"} >> {status = error}'
+expected_flags:
+  - path: Query.Pipeline[0].StructuralStage
+    flag: UNSUPPORTED
+notes: >
+  A structural operator relates two record sets by the trace structure, and
+  nothing in a log stream records which line is whose parent. LogQL having no
+  join is beside the point: even a target with joins could not express this,
+  because there is no attribute to correlate on. That is why StructuralStage is
+  its own IR node rather than a JoinType.

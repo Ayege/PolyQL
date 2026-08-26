@@ -1,0 +1,11 @@
+name: histogram_quantile into traceql
+description: A quantile over bucketed metrics, which spans do not carry.
+source_dsl: promql
+target_dsl: traceql
+input: 'histogram_quantile(0.99, sum by (le) (rate(x[5m])))'
+expected_output: '{}'
+notes: >
+  Tracing has no bucketed distribution to take a quantile of. Tempo's newer
+  metrics-from-traces functions can compute one over span durations, but that is
+  a different operation on different data, and registry/traceql.yaml lists it
+  under what is deliberately not supported rather than claiming the mapping.

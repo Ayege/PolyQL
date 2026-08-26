@@ -1,0 +1,11 @@
+name: conjunctive spanset filter
+description: An AND-tree, which is the one shape a conjunctive selector can hold.
+source_dsl: traceql
+target_dsl: logql
+input: '{resource.service.name = "web" && span.http.method = "GET"}'
+expected_output: '{resource_service_name="web", span_http_method="GET"}'
+notes: >
+  A LogQL stream selector puts an implicit "and" between its matchers, so an
+  AND-tree lowers exactly and the comma is that "and". This is the best case for
+  this direction: everything survives but the attribute names. Compare with the
+  disjunction case, where nothing does.

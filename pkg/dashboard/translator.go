@@ -245,9 +245,19 @@ func ReadDashboard(path string) (*Dashboard, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: reading %s: %w", path, err)
 	}
+	return ParseDashboard(data, path)
+}
+
+// ParseDashboard decodes dashboard JSON that has already been read.
+//
+// source names where the bytes came from — a path, a URL — and is used only to
+// say which document failed to parse. It exists so that a dashboard fetched over
+// HTTP and one read from disk decode through exactly the same code, rather than
+// through two copies that can drift.
+func ParseDashboard(data []byte, source string) (*Dashboard, error) {
 	var dash Dashboard
 	if err := json.Unmarshal(data, &dash); err != nil {
-		return nil, fmt.Errorf("dashboard: parsing %s: %w", path, err)
+		return nil, fmt.Errorf("dashboard: parsing %s: %w", source, err)
 	}
 	return &dash, nil
 }

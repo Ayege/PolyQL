@@ -5,6 +5,7 @@ import (
 
 	"github.com/polyql/polyql/pkg/compiler/parser/logql"
 	"github.com/polyql/polyql/pkg/compiler/parser/promql"
+	"github.com/polyql/polyql/pkg/compiler/parser/traceql"
 	"github.com/polyql/polyql/pkg/registry"
 )
 
@@ -24,6 +25,7 @@ func TestRegistryCoversEveryParserFunction(t *testing.T) {
 	}{
 		{"promql", promql.FunctionNames()},
 		{"logql", logql.FunctionNames()},
+		{"traceql", traceql.FunctionNames()},
 	}
 
 	for _, c := range cases {
@@ -110,6 +112,15 @@ func TestParserRecognizesEveryRegistryFunction(t *testing.T) {
 				// LogQL spells its pipeline stages as keywords, the same
 				// intended asymmetry as PromQL's aggregation operators.
 				return logql.IsStageKeyword(name)
+			},
+		},
+		{
+			dsl: "traceql",
+			recognized: func(name string) bool {
+				// TraceQL writes every one of its functions as an aggregate
+				// call, so there is no asymmetry to allow for here.
+				_, ok := traceql.LookupAggregate(name)
+				return ok
 			},
 		},
 	}

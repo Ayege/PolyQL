@@ -1,0 +1,12 @@
+name: sum over a named attribute
+description: An aggregate that names the attribute it combines.
+source_dsl: traceql
+target_dsl: traceql
+input: 'sum(span.duration) over ({.http.method = "GET"})'
+expected_output: 'sum(span.duration) over ({ .http.method = "GET" })'
+expected_fidelity_score: 1.0
+notes: >
+  count() counts whole spans and stands alone; sum, avg, min and max need to
+  know which attribute's values they are adding up. The IR has no field naming
+  an aggregated attribute — a metric series is its own value — so it travels as
+  the AggregationStage's parameter, and this case pins that round trip.

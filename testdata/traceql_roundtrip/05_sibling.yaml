@@ -1,0 +1,11 @@
+name: sibling relationship
+description: Two error spans sharing a parent.
+source_dsl: traceql
+target_dsl: traceql
+input: '{.error = true} ~ {.error = true}'
+expected_output: '{ .error = true } ~ { .error = true }'
+expected_fidelity_score: 1.0
+notes: >
+  The third trace-tree relationship. It is here to keep the structural operator
+  table honest: all three spellings come from the registry, so an entry losing
+  its symbol would render as the empty string and fail this case.

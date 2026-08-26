@@ -38,8 +38,8 @@ functions and operators means in IR terms, and tells the validator what the
 language can and cannot express.
 
 ```yaml
-dsl: traceql
-signal_types: [span]
+dsl: nrql
+signal_types: [metric]
 
 capabilities:
   joins: true
@@ -55,7 +55,7 @@ normalizations:
   string_quoting: double
 
 type_coercion:
-  spanset: STRING
+  instant_vector: DOUBLE
   scalar: DOUBLE
 
 operators:
@@ -67,7 +67,7 @@ functions:
     ir_kind: RATE          # omit for a function with no IR aggregation operator
     agg_scope: TEMPORAL    # TEMPORAL collapses over time, GROUP across series
     arity: 1
-    arg_types: [spanset]
+    arg_types: [instant_vector]
     return_type: DOUBLE
 ```
 
@@ -80,6 +80,62 @@ translator that lies:
   stage, and the validator reports it per target.
 - **`agg_scope` is not optional decoration.** It is the only thing separating
   PromQL's `sum` from its `sum_over_time`; both are IR `SUM`.
+
+#### Saying what your language *cannot* do
+
+The capability flags are what the validator reads to decide that a construct is
+`UNSUPPORTED` rather than merely awkward, so an omission here shows up as a
+fidelity score that is too generous. Most default to the answer that is right
+for a PromQL-shaped language, which means **a language that lacks something has
+to say so**:
+
+| Flag | Default | Set it when |
+| ---- | ------- | ----------- |
+| `arithmetic` | `true` | The language cannot compute over whole result sets. TraceQL cannot: a span set is not a number. |
+| `temporal_windows` | `true` | The range travels outside the query text. Tempo takes start and end as request parameters. |
+| `boolean_selectors` | `false` | Your selector holds a full boolean expression rather than a conjunctive matcher list. |
+| `attribute_casts` | `false` | The language can reinterpret an attribute's type — TraceQL's `as (span.x: int)`. |
+| `scoped_attributes` | `false` | Attributes are addressed through an explicit scope prefix rather than one flat namespace. |
+| `metric_extraction` | `false` | The language derives numbers from records that are not numbers. |
+| `group_aggregation_needs_samples` | `false` | Your group aggregations reduce a sample stream rather than the records themselves. LogQL's do — `sum({app="x"})` is not a query, because a stream selector yields lines and `sum` reduces samples. |
+| `structural_ops` | *(empty)* | The language relates records by their position in a trace tree. |
+
+`group_aggregation_needs_samples` is worth dwelling on, because getting it wrong
+produces exactly the failure this project exists to prevent. The IR records
+"collapse across groups" and nothing about what is being collapsed, so a
+per-stage check finds the operator, sees that your language has it, and calls the
+translation exact — while your emitter, reaching the same stage with raw log
+lines in hand, drops it. The report then claims full fidelity for a query that
+lost its aggregation. Set the flag and the validator reads the pipeline as a
+whole instead, so the score and the emitted text tell the same story.
+
+#### The other two operator tables
+
+`operators:` maps onto IR `MatchOp` — one attribute compared against one
+operand. Two other IR enums exist, and each gets a table of its own so that
+every table resolves to exactly one IR type instead of carrying a discriminator:
+
+```yaml
+# Boolean connectives composing whole predicates (IR LogicalOp).
+logical_operators:
+  "&&": { ir_op: AND }
+  "||": { ir_op: OR }
+  "!":  { ir_op: NOT }
+
+# Trace-tree relationships (IR StructuralOp). Keyed by name rather than by
+# symbol, because ">" is also a comparison operator above and a map cannot hold
+# one key twice — so the spelling is given explicitly and is required.
+structural_operators:
+  child:
+    symbol: ">"
+    ir_op: CHILD
+    description: "Spans whose direct parent is in the left-hand span set"
+```
+
+A structural operator listed under `capabilities.structural_ops` with no
+spelling — or spelled with no capability — is rejected at load, since either
+half alone would let the validator promise a translation the emitter cannot
+write. `registry/traceql.yaml` is the worked example for all of this.
 
 Loading is strict — an unknown key or an unrecognised IR symbol fails with the
 file and field named. Check your file before writing any Go:

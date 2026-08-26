@@ -1,0 +1,14 @@
+name: arithmetic into traceql
+description: Division between two result sets, which a span set cannot do.
+source_dsl: promql
+target_dsl: traceql
+input: 'errors_total / requests_total'
+expected_flags:
+  - path: Query.Pipeline[0].BinaryOpStage
+    flag: UNSUPPORTED
+notes: >
+  A span set is not a number, so "a / b" has no TraceQL spelling at all. This is
+  the whole reason the registry grew an "arithmetic" capability: every other
+  language in it has arithmetic, so the flag defaults to true and only TraceQL
+  has to say otherwise. Without it the validator would have passed this through
+  as fully translated.

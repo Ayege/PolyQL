@@ -1,6 +1,6 @@
 // Package registrytest verifies that the DSL front ends coexist. Each parser
 // package registers itself from init, so this is the only place that sees the
-// registry as a real binary would: with more than one language present.
+// registry as a real binary would: with every language present at once.
 package registrytest
 
 import (
@@ -14,11 +14,12 @@ import (
 	// federation proxy selects which DSLs it supports.
 	_ "github.com/polyql/polyql/pkg/compiler/parser/logql"
 	_ "github.com/polyql/polyql/pkg/compiler/parser/promql"
+	_ "github.com/polyql/polyql/pkg/compiler/parser/traceql"
 )
 
-func TestBothParsersRegister(t *testing.T) {
+func TestEveryParserRegisters(t *testing.T) {
 	got := parser.List()
-	want := []string{"logql", "promql"}
+	want := []string{"logql", "promql", "traceql"}
 	if len(got) != len(want) {
 		t.Fatalf("List() = %v, want %v", got, want)
 	}
@@ -36,6 +37,7 @@ func TestEachParserProducesItsOwnTree(t *testing.T) {
 	cases := []struct{ dsl, query string }{
 		{"promql", `rate(http_requests_total{status="500"}[5m])`},
 		{"logql", `rate({app="frontend"} |= "error" [5m])`},
+		{"traceql", `{ span.http.status_code = 500 && duration > 100ms }`},
 	}
 
 	for _, c := range cases {

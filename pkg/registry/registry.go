@@ -127,6 +127,37 @@ type OperatorDef struct {
 	Context OperatorContext
 }
 
+// LogicalOperatorDef maps one DSL spelling onto an IR boolean connective.
+//
+// It is a table of its own rather than an entry in Operators because the two map
+// onto different IR enums: an OperatorDef names a MatchOp, which compares one
+// attribute against one operand, while this names a LogicalOp, which composes
+// whole predicates. Keeping them apart is what lets each table resolve to
+// exactly one IR type instead of carrying a discriminator.
+type LogicalOperatorDef struct {
+	// Symbol is the connective as written in this DSL — "&&", "and", "||".
+	Symbol string
+	// IROp is the boolean connective it corresponds to.
+	IROp ir.LogicalOp
+}
+
+// StructuralOperatorDef maps one DSL spelling onto an IR structural operator.
+//
+// Structural operators relate two record sets by their position in a trace tree
+// rather than by any value they carry, so like LogicalOperatorDef this is a
+// table of its own. Only DSLs that query spans define any.
+type StructuralOperatorDef struct {
+	// Name is the entry's key, a readable name for the relationship.
+	Name string
+	// Symbol is the operator as written in this DSL — ">", ">>", "~".
+	Symbol string
+	// IROp is the structural relationship it corresponds to.
+	IROp ir.StructuralOp
+	// Description is the human-readable gloss from the YAML, used when a report
+	// has to explain what a target could not express.
+	Description string
+}
+
 // AggregationDefaults records the arithmetic semantics a DSL assumes, so the
 // resolver can normalise them onto the QLS rules and the fidelity reporter can
 // say what changed.
@@ -257,6 +288,69 @@ type Capabilities struct {
 	// PromQL's bool. A target without it can still write the filtering form,
 	// but the result set differs.
 	BoolModifier bool
+	// Arithmetic reports whether the DSL can compute over whole result sets:
+	// "a / b", "-x". TraceQL cannot — a span set is not a number — so an IR
+	// BinaryOpStage or UnaryOpStage translated into it is UNSUPPORTED. It
+	// defaults to true, since every other DSL in the registry has arithmetic.
+	Arithmetic bool
+	// TemporalWindows reports whether the DSL can narrow a query to a time
+	// window from inside the query text — PromQL's [5m], its offset, its @.
+	// TraceQL cannot: a Tempo query carries its range as separate request
+	// parameters, so an IR Window has nowhere to go in the emitted text. It
+	// defaults to true.
+	TemporalWindows bool
+	// MetricExtraction reports whether the DSL can derive a numeric aggregate
+	// from records that are not themselves numbers — LogQL's rate over log
+	// lines, TraceQL's count() over a span set. It defaults to false, which is
+	// right for a DSL whose data source is already numeric.
+	MetricExtraction bool
+	// ScopedAttributes reports whether the DSL addresses attributes through an
+	// explicit scope prefix — TraceQL's span., resource. and the bare
+	// intrinsics. A DSL with one flat label namespace does not, and translating
+	// into it means the prefix has to be folded into the key or dropped. It
+	// defaults to false.
+	ScopedAttributes bool
+	// StructuralOps are the trace-tree relationships the DSL can express. It is
+	// empty for a DSL that does not query spans.
+	StructuralOps []ir.StructuralOp
+	// BooleanSelectors reports whether the DSL's selector holds a full boolean
+	// expression rather than a conjunctive matcher list.
+	//
+	// PromQL and LogQL both put an implicit "and" between the matchers between
+	// their braces, so "either of these labels" has no selector form at all.
+	// TraceQL's braces take && and || alike. An IR spanset filter that is not a
+	// pure AND-tree therefore cannot be written by a target without this, and
+	// the validator has to say so rather than let the emitter drop an operand.
+	// It defaults to false, which is right for a conjunctive selector.
+	BooleanSelectors bool
+	// AttributeCasts reports whether the DSL can reinterpret an attribute's
+	// type — TraceQL's "as (span.x: int)". It defaults to false.
+	AttributeCasts bool
+	// GroupAggregationNeedsSamples reports whether the DSL's group aggregations
+	// consume a sample stream rather than the records themselves.
+	//
+	// LogQL's do: "sum({app=\"x\"})" is not a LogQL query, because sum reduces
+	// samples and a stream selector yields log lines. A temporal aggregation has
+	// to turn one into the other first. PromQL's source is already samples, and
+	// TraceQL's count() reduces spans directly, so neither needs this.
+	//
+	// It matters because the IR records "aggregate across groups" without saying
+	// what the operand is. Without this flag the validator sees an operator the
+	// target has, calls it FULL, and the emitter then quietly drops it — the
+	// exact divergence between the score and the output that the fidelity report
+	// exists to prevent. It defaults to false.
+	GroupAggregationNeedsSamples bool
+}
+
+// SupportsStructuralOp reports whether the DSL can express a trace-tree
+// relationship.
+func (c *Capabilities) SupportsStructuralOp(op ir.StructuralOp) bool {
+	for _, supported := range c.StructuralOps {
+		if supported == op {
+			return true
+		}
+	}
+	return false
 }
 
 // SupportsWindowAlignment reports whether the DSL can express an alignment.
@@ -298,6 +392,13 @@ type DSLDefinition struct {
 	Functions map[string]*FunctionDef
 	// Operators is keyed by the operator's spelling in this DSL.
 	Operators map[string]*OperatorDef
+	// LogicalOperators is keyed by the connective's spelling in this DSL. It is
+	// empty for a DSL whose predicates do not compose.
+	LogicalOperators map[string]*LogicalOperatorDef
+	// StructuralOperators is keyed by a readable name for the relationship,
+	// since a DSL may spell two of them alike. It is empty for a DSL that does
+	// not query spans.
+	StructuralOperators map[string]*StructuralOperatorDef
 	// TypeCoercion maps this DSL's type names onto QLS types.
 	TypeCoercion map[string]ir.QlsDataType
 	// MetricTypes maps this DSL's metric type names onto QLS metric types.
@@ -430,6 +531,102 @@ func (d *DSLDefinition) SupportsIROpInContext(op ir.MatchOp, ctx OperatorContext
 		}
 	}
 	return false
+}
+
+// RangeOperandTypes returns the argument type names this DSL's temporal
+// aggregations take as their operand.
+//
+// It is derived rather than declared, because the DSL already says it: whatever
+// type rate and count_over_time consume is, by definition, this language's
+// "a stream narrowed to a window". For LogQL that is range_vector and
+// unwrapped_range; for a DSL with no temporal aggregations it is empty.
+//
+// The operand is taken to be the last declared argument, which is the convention
+// these definitions follow — quantile_over_time is (scalar, unwrapped_range),
+// and it is the unwrapped_range that the function reduces.
+//
+// It exists so that callers can recognize a function that consumes the stream
+// rather than the samples without hard-coding one language's type names. A
+// function like LogQL's bytes_rate has no IR aggregation operator, so it reaches
+// the IR as a plain FunctionStage — but it is still a range aggregation, and
+// anything ordering a pipeline has to know that.
+func (d *DSLDefinition) RangeOperandTypes() map[string]bool {
+	types := make(map[string]bool)
+	for _, fn := range d.Functions {
+		if !fn.IsAggregation || fn.AggScope != ir.AggScopeTemporal {
+			continue
+		}
+		if len(fn.ArgTypes) == 0 {
+			continue
+		}
+		types[fn.ArgTypes[len(fn.ArgTypes)-1].Name] = true
+	}
+	return types
+}
+
+// ReadsRangeOperand reports whether a function consumes one of the given operand
+// types, which is how a caller asks "is this a range aggregation spelled as a
+// plain call?". Pass the set from RangeOperandTypes.
+func (f *FunctionDef) ReadsRangeOperand(rangeTypes map[string]bool) bool {
+	for _, arg := range f.ArgTypes {
+		if rangeTypes[arg.Name] {
+			return true
+		}
+	}
+	return false
+}
+
+// LogicalOperator returns a boolean connective by its DSL spelling.
+func (d *DSLDefinition) LogicalOperator(symbol string) (*LogicalOperatorDef, error) {
+	if op, ok := d.LogicalOperators[symbol]; ok {
+		return op, nil
+	}
+	return nil, fmt.Errorf("registry: %s has no logical operator %q", d.DSL, symbol)
+}
+
+// LogicalOperatorForIROp finds this DSL's spelling of a boolean connective,
+// which is the direction an emitter needs.
+func (d *DSLDefinition) LogicalOperatorForIROp(op ir.LogicalOp) (*LogicalOperatorDef, bool) {
+	var matches []*LogicalOperatorDef
+	for _, def := range d.LogicalOperators {
+		if def.IROp == op {
+			matches = append(matches, def)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, false
+	}
+	// A DSL may accept more than one spelling of the same connective; sorting
+	// makes which one gets written deterministic rather than map-order luck.
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Symbol < matches[j].Symbol })
+	return matches[0], true
+}
+
+// StructuralOperatorForIROp finds this DSL's spelling of a trace-tree
+// relationship.
+func (d *DSLDefinition) StructuralOperatorForIROp(op ir.StructuralOp) (*StructuralOperatorDef, bool) {
+	var matches []*StructuralOperatorDef
+	for _, def := range d.StructuralOperators {
+		if def.IROp == op {
+			matches = append(matches, def)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, false
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Name < matches[j].Name })
+	return matches[0], true
+}
+
+// StructuralOperatorNames returns every structural operator name in the
+// definition, sorted.
+func (d *DSLDefinition) StructuralOperatorNames() []string {
+	names := make([]string, 0, len(d.StructuralOperators))
+	for name := range d.StructuralOperators {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // FunctionNames returns every function name in the definition, sorted.

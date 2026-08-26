@@ -1,0 +1,14 @@
+name: structural operator into promql
+description: A trace-tree relationship, which vector matching cannot stand in for.
+source_dsl: traceql
+target_dsl: promql
+input: '{span.http.status_code = 500} >> {status = error}'
+expected_flags:
+  - path: Query.Pipeline[0].StructuralStage
+    flag: UNSUPPORTED
+notes: >
+  PromQL does have joins, which makes this the case that shows why a structural
+  operator is not one. Vector matching correlates two sets on label values the
+  query names; a descendant relationship correlates them on the trace tree,
+  which no label records. Having joins is therefore no help, and the validator
+  refuses rather than approximating.

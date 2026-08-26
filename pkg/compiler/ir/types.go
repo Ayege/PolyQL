@@ -261,34 +261,42 @@ func (s *QlsLogSeverity) UnmarshalJSON(b []byte) error {
 }
 
 // QlsSpanKind is the span kind enum from QLS §.5 Spans > Kind, which follows the
-// OpenTelemetry model.
+// OpenTelemetry model. TraceQL exposes it as the "kind" intrinsic, so these are
+// the values a span-kind predicate compares against.
 //
-// The zero value is CLIENT while the spec's default for a span is INTERNAL; use
-// DefaultSpanKind when constructing span records.
+// The zero value is UNSPECIFIED, matching OpenTelemetry's own unset member. A
+// span whose kind was never stated is not a client span, and making the zero
+// value say so would have a TraceQL emitter write "kind = client" for a query
+// that named no kind at all. Construct span records with DefaultSpanKind, which
+// is the spec's default of INTERNAL, rather than relying on the zero value.
 type QlsSpanKind int
 
 const (
-	// SpanKindClient is an outgoing request.
-	SpanKindClient QlsSpanKind = iota
+	// SpanKindUnspecified is the unset kind: nothing about the span says which
+	// it is.
+	SpanKindUnspecified QlsSpanKind = iota
+	// SpanKindInternal is an internal operation, and the spec's default.
+	SpanKindInternal
 	// SpanKindServer is an incoming request.
 	SpanKindServer
+	// SpanKindClient is an outgoing request.
+	SpanKindClient
 	// SpanKindProducer is an outgoing event.
 	SpanKindProducer
 	// SpanKindConsumer is an incoming event.
 	SpanKindConsumer
-	// SpanKindInternal is an internal or unknown operation.
-	SpanKindInternal
 )
 
 // DefaultSpanKind is the spec default for a span record (QLS §.5 > Kind).
 const DefaultSpanKind = SpanKindInternal
 
 var qlsSpanKindEnum = newEnumDef[QlsSpanKind]("QlsSpanKind",
-	"CLIENT",
+	"UNSPECIFIED",
+	"INTERNAL",
 	"SERVER",
+	"CLIENT",
 	"PRODUCER",
 	"CONSUMER",
-	"INTERNAL",
 )
 
 func (k QlsSpanKind) String() string { return qlsSpanKindEnum.String(k) }

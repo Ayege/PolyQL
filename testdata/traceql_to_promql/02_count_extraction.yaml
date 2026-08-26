@@ -1,0 +1,12 @@
+name: count over a span set
+description: TraceQL metric extraction into a PromQL group aggregation.
+source_dsl: traceql
+target_dsl: promql
+input: 'count() over ({span.error = true})'
+expected_output: 'count({span_error="true"})'
+notes: >
+  This is the closest correspondence in the whole TraceQL-to-PromQL direction.
+  Both languages have COUNT on the group axis, so the operator itself maps
+  exactly; what does not map is what is being counted, since PromQL counts
+  series and TraceQL counts spans. The aggregation is FULL and the signal
+  mismatch carries the rest of the story.

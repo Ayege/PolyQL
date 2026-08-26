@@ -1,0 +1,14 @@
+name: attribute cast into logql
+description: An explicit type cast, which LogQL cannot express on a stream label.
+source_dsl: traceql
+target_dsl: logql
+input: '{span.http.status_code = 500} as (span.http.status_code: int)'
+expected_flags:
+  - path: Query.Pipeline[0].CoercionStage
+    flag: UNSUPPORTED
+notes: >
+  LogQL does have a coercion — "| unwrap duration(x)" — but it converts an
+  extracted label into a sample for a metric aggregation, not a stream label
+  into a typed value for comparison. Mapping one onto the other would claim an
+  equivalence that does not hold, so the capability flag says no and the cast is
+  reported rather than approximated.

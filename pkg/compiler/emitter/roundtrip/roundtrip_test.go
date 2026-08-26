@@ -21,8 +21,10 @@ import (
 
 	_ "github.com/polyql/polyql/pkg/compiler/emitter/logql"
 	_ "github.com/polyql/polyql/pkg/compiler/emitter/promql"
+	_ "github.com/polyql/polyql/pkg/compiler/emitter/traceql"
 	_ "github.com/polyql/polyql/pkg/compiler/parser/logql"
 	_ "github.com/polyql/polyql/pkg/compiler/parser/promql"
+	_ "github.com/polyql/polyql/pkg/compiler/parser/traceql"
 )
 
 func testRegistry(t *testing.T) *registry.Registry {
@@ -115,6 +117,34 @@ func TestCrossDSLOutputParses(t *testing.T) {
 			wantContains: []string{`rate(`, `app="frontend"`, `[5m]`},
 		},
 		{
+			name:         "traceql spanset into logql",
+			sourceDSL:    "traceql",
+			query:        `{resource.service.name = "web" && span.http.method = "GET"}`,
+			targetDSL:    "logql",
+			wantContains: []string{`resource_service_name="web"`, `span_http_method="GET"`},
+		},
+		{
+			name:         "traceql count into promql",
+			sourceDSL:    "traceql",
+			query:        `count() over ({span.error = true})`,
+			targetDSL:    "promql",
+			wantContains: []string{`count(`, `span_error="true"`},
+		},
+		{
+			name:         "logql stream selector into traceql",
+			sourceDSL:    "logql",
+			query:        `{app="frontend"}`,
+			targetDSL:    "traceql",
+			wantContains: []string{`.app = "frontend"`},
+		},
+		{
+			name:         "promql selector into traceql",
+			sourceDSL:    "promql",
+			query:        `up{job="api"}`,
+			targetDSL:    "traceql",
+			wantContains: []string{`.job = "api"`},
+		},
+		{
 			name:         "promql grouped rate into logql",
 			sourceDSL:    "promql",
 			query:        `sum by (job) (rate(http_requests_total[5m]))`,
@@ -205,12 +235,34 @@ func TestSameDSLRoundTripIsStable(t *testing.T) {
 		{"promql", `rate(x[5m])[30m:1m]`, `rate(x[5m])[30m:1m]`},
 		{"promql", `sum without (pod) (rate(x[5m]))`, `sum without (pod) (rate(x[5m]))`},
 
+		{"traceql", `{span.http.status_code = 500}`, `{ span.http.status_code = 500 }`},
+		{"traceql", `{duration > 100ms}`, `{ duration > 100ms }`},
+		{"traceql", `{status = error && kind = server}`, `{ status = error && kind = server }`},
+		{"traceql", `{(.a = 1 || .b = 2) && .c = 3}`, `{ (.a = 1 || .b = 2) && .c = 3 }`},
+		{"traceql", `{.a = 1} > {.b = 2}`, `{ .a = 1 } > { .b = 2 }`},
+		{"traceql", `{.a = 1} >> {.b = 2}`, `{ .a = 1 } >> { .b = 2 }`},
+		{"traceql", `{.a = 1} ~ {.b = 2}`, `{ .a = 1 } ~ { .b = 2 }`},
+		{"traceql", `count() over ({.error = true})`, `count() over ({ .error = true })`},
+		{"traceql", `count() over ({}) by (resource.service.name)`,
+			`count() over ({}) by (resource.service.name)`},
+		{"traceql", `max(span.duration) over ({duration > 1s})`,
+			`max(span.duration) over ({ duration > 1s })`},
+		{"traceql", `{}`, `{}`},
+		{"traceql", `{!(.a = 1)}`, `{ !(.a = 1) }`},
+
 		{"logql", `{app="frontend"}`, `{app="frontend"}`},
 		{"logql", `{app="frontend"} |= "error"`, `{app="frontend"} |= "error"`},
 		{"logql", `{app="frontend"} |= "error.log"`, `{app="frontend"} |= "error.log"`},
 		{"logql", `{app="frontend"} != "debug"`, `{app="frontend"} != "debug"`},
 		{"logql", `{app="frontend"} |~ "err.*"`, `{app="frontend"} |~ "err.*"`},
 		{"logql", `count_over_time({a="b"}[90m])`, `count_over_time({a="b"}[90m])`},
+		// A range aggregation written as a plain call — bytes_rate has no IR
+		// aggregation operator — must keep its place ahead of the aggregation
+		// that reduces its samples. The reorder pass used to sort it after,
+		// which cost the sum without costing any fidelity score.
+		{"logql", `sum(bytes_rate({app="x"}[5m]))`, `sum(bytes_rate({app="x"}[5m]))`},
+		{"logql", `sum by (job) (absent_over_time({app="x"}[5m]))`,
+			`sum by (job) (absent_over_time({app="x"}[5m]))`},
 		{"logql", `count_over_time({a="b"}[1h30m])`, `count_over_time({a="b"}[1h30m])`},
 		{"logql", `sum(rate({a="b"}[5m])) / sum(rate({c="d"}[5m]))`,
 			`sum(rate({a="b"}[5m])) / sum(rate({c="d"}[5m]))`},
@@ -314,11 +366,11 @@ func pipelineShape(query *ir.Query) string {
 	return shape
 }
 
-// TestEmitterRegistryHasBothTargets covers the init-time registration seeing
+// TestEmitterRegistryHasEveryTarget covers the init-time registration seeing
 // more than one language, which no single emitter package's tests can.
-func TestEmitterRegistryHasBothTargets(t *testing.T) {
+func TestEmitterRegistryHasEveryTarget(t *testing.T) {
 	got := emitter.List()
-	want := []string{"logql", "promql"}
+	want := []string{"logql", "promql", "traceql"}
 	if len(got) != len(want) {
 		t.Fatalf("List() = %v, want %v", got, want)
 	}
@@ -339,9 +391,11 @@ func TestEmitterRegistryHasBothTargets(t *testing.T) {
 		}
 	}
 
-	if _, err := emitter.Get("traceql"); err == nil {
+	// A name no emitter claims, so the error path stays reachable however many
+	// languages get registered.
+	if _, err := emitter.Get("nonsuchql"); err == nil {
 		t.Error("expected an error for an unregistered target")
-	} else if !strings.Contains(err.Error(), "logql, promql") {
+	} else if !strings.Contains(err.Error(), "logql, promql, traceql") {
 		t.Errorf("error %q should list what is registered", err)
 	}
 }

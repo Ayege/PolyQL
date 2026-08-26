@@ -126,6 +126,26 @@ func (w *writer) emitSource(query *ir.Query, extra []*ir.LabelMatcher) (rendered
 	for _, selector := range query.Source.Selectors {
 		matchers = append(matchers, selector.Matchers...)
 	}
+	// A source resolved from TraceQL carries a boolean filter tree rather than a
+	// flat selector. PromQL's braces are conjunctive, so only an AND-tree lowers
+	// into them; anything else is reported instead of half-written.
+	if spanset := query.Source.Spanset; spanset != nil && spanset.Filters != nil {
+		lowered, faithful := emitter.ConjunctiveMatchers(spanset.Filters)
+		if !faithful {
+			w.notes.Addf("UNSUPPORTED: a PromQL selector puts an implicit \"and\" between its "+
+				"matchers and cannot express %q; that part of the filter was left out",
+				spanset.Filters.String())
+		}
+		// A series selector admits only =, !=, =~ and !~. PromQL's ordered
+		// comparisons operate on a series' value, not on a label, so there is no
+		// selector form of one to fall back to.
+		spellable, unspellable := emitter.SelectorSpellable(w.def, lowered)
+		for _, matcher := range unspellable {
+			w.notes.Addf("UNSUPPORTED: a PromQL selector cannot compare a label with %s; the filter "+
+				"on %q was left out", matcher.Op.Symbol(), matcher.Key)
+		}
+		matchers = append(matchers, spellable...)
+	}
 	matchers = append(matchers, extra...)
 
 	parts := make([]string, 0, len(matchers))
@@ -155,6 +175,18 @@ func (w *writer) emitSource(query *ir.Query, extra []*ir.LabelMatcher) (rendered
 	return rendered{text: b.String(), selector: true, atomic: true}, nil
 }
 
+// labelName renders an attribute key as a PromQL label name, reporting a rewrite
+// where the key was not already one. A span attribute is dotted, and PromQL
+// admits no dot in a label name, so a query carrying one would not parse.
+func (w *writer) labelName(key string) string {
+	safe, changed := ir.FlatLabelName(key)
+	if changed {
+		w.notes.Addf("PARTIAL: PromQL label names admit no dots, so %q was written as %q",
+			key, safe)
+	}
+	return safe
+}
+
 // matcherText renders one label matcher.
 func (w *writer) matcherText(m *ir.LabelMatcher) (string, error) {
 	// A set-membership predicate becomes a regex alternation: PromQL has no IN
@@ -172,7 +204,7 @@ func (w *writer) matcherText(m *ir.LabelMatcher) (string, error) {
 		for _, value := range m.Values {
 			quoted = append(quoted, regexp.QuoteMeta(value))
 		}
-		return m.Key + symbol + emitter.QuoteString(strings.Join(quoted, "|"),
+		return w.labelName(m.Key) + symbol + emitter.QuoteString(strings.Join(quoted, "|"),
 			w.def.Normalizations.StringQuoting), nil
 	}
 
@@ -191,14 +223,14 @@ func (w *writer) matcherText(m *ir.LabelMatcher) (string, error) {
 		w.notes.Addf("PARTIAL: PromQL has no line containment filter; %q was written as a "+
 			"regular expression over the escaped text", m.Value)
 		pattern := ".*" + regexp.QuoteMeta(m.Value) + ".*"
-		return m.Key + symbol + emitter.QuoteString(pattern, w.def.Normalizations.StringQuoting), nil
+		return w.labelName(m.Key) + symbol + emitter.QuoteString(pattern, w.def.Normalizations.StringQuoting), nil
 	}
 
 	symbol, err := w.operatorSymbol(m.Op, registry.OperatorContextSelector)
 	if err != nil {
 		return "", err
 	}
-	return m.Key + symbol + emitter.QuoteString(m.Value, w.def.Normalizations.StringQuoting), nil
+	return w.labelName(m.Key) + symbol + emitter.QuoteString(m.Value, w.def.Normalizations.StringQuoting), nil
 }
 
 // operatorSymbol finds the target's spelling of an IR predicate, preferring one

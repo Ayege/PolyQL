@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/polyql/polyql/pkg/compiler/ir"
+	"github.com/polyql/polyql/pkg/registry"
 )
 
 // stageRank is a stage's position in the order a pipeline-ordered DSL requires.
@@ -91,12 +92,20 @@ func changesLine(name string) bool {
 	return name == "line_format" || name == "decolorize"
 }
 
-// rankOf classifies a stage.
+// rankOf classifies a stage against a target's own vocabulary.
 //
 // A filter is ranked by what it addresses: one over the log body is a line
 // filter and reads the raw line, while one over an attribute is a label filter
 // and needs whatever produced that attribute to have run already.
-func rankOf(stage ir.PipelineStage) stageRank {
+//
+// rangeTypes comes from the target's RangeOperandTypes and is what lets a
+// function stage be recognized as a range aggregation. Without it, a function
+// with no IR aggregation operator — LogQL's bytes_rate — falls to rankOther and
+// sorts after the aggregations, which puts it on the far side of the very
+// aggregation that consumes its samples. That is not a cosmetic reorder: the
+// emitter then finds a group aggregation applied to raw log lines and drops it,
+// so "sum(bytes_rate(...))" loses its sum while still reporting full fidelity.
+func rankOf(stage ir.PipelineStage, rangeTypes map[string]bool, target *registry.DSLDefinition) stageRank {
 	switch node := stage.(type) {
 	case *ir.FilterStage:
 		switch {
@@ -114,6 +123,14 @@ func rankOf(stage ir.PipelineStage) stageRank {
 			return rankFormatter
 		case node.Name == "unwrap":
 			return rankUnwrap
+		}
+		// A function the target declares as consuming a range is one of its
+		// range aggregations written as a plain call, so it belongs with the
+		// aggregations rather than after them.
+		if target != nil {
+			if fn, ok := target.FunctionByIRName(node.Name); ok && fn.ReadsRangeOperand(rangeTypes) {
+				return rankAggregation
+			}
 		}
 		return rankOther
 	case *ir.AggregationStage:
@@ -179,9 +196,10 @@ func (v *validator) checkPipelineOrder(query *ir.Query, path string) {
 	original := make([]ir.PipelineStage, len(query.Pipeline))
 	copy(original, query.Pipeline)
 
+	rangeTypes := v.target.RangeOperandTypes()
 	ranks := make([]stageRank, len(original))
 	for i, stage := range original {
-		ranks[i] = rankOf(stage)
+		ranks[i] = rankOf(stage, rangeTypes, v.target)
 	}
 	if sort.SliceIsSorted(ranks, func(i, j int) bool { return ranks[i] < ranks[j] }) {
 		return
@@ -278,10 +296,17 @@ func crossedProducer(original []ir.PipelineStage, indices []int, ranks []stageRa
 }
 
 // describeOrder renders a pipeline's stage kinds, for error messages and tests.
-func describeOrder(pipeline ir.Pipeline) string {
+//
+// target may be nil, in which case a function stage with no IR aggregation
+// operator is described as a plain stage rather than as a range aggregation.
+func describeOrder(pipeline ir.Pipeline, target *registry.DSLDefinition) string {
+	var rangeTypes map[string]bool
+	if target != nil {
+		rangeTypes = target.RangeOperandTypes()
+	}
 	parts := make([]string, 0, len(pipeline))
 	for _, stage := range pipeline {
-		parts = append(parts, rankOf(stage).String())
+		parts = append(parts, rankOf(stage, rangeTypes, target).String())
 	}
 	return strings.Join(parts, " -> ")
 }

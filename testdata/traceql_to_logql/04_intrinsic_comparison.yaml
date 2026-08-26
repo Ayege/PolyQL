@@ -1,0 +1,12 @@
+name: duration intrinsic into a stream selector
+description: An ordered comparison, which LogQL admits only after a parser stage.
+source_dsl: traceql
+target_dsl: logql
+input: '{resource.service.name = "web" && duration > 100ms}'
+expected_output: '{resource_service_name="web"}'
+notes: >
+  LogQL has ">", but only as a label filter after a parser stage; a stream
+  selector takes =, !=, =~ and !~ and nothing else. Writing the comparison into
+  the braces anyway would produce text that fails to parse, which is the one
+  outcome this corpus exists to prevent — so the matcher is dropped and
+  reported, and the service-name matcher still carries.

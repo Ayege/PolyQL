@@ -135,6 +135,26 @@ func (w *writer) emitSource(query *ir.Query) (rendered, error) {
 	for _, selector := range query.Source.Selectors {
 		matchers = append(matchers, selector.Matchers...)
 	}
+	// A source resolved from TraceQL carries a boolean filter tree rather than a
+	// flat selector. LogQL's braces are conjunctive, so only an AND-tree lowers
+	// into them; anything else is reported instead of half-written.
+	if spanset := query.Source.Spanset; spanset != nil && spanset.Filters != nil {
+		lowered, faithful := emitter.ConjunctiveMatchers(spanset.Filters)
+		if !faithful {
+			w.notes.Addf("UNSUPPORTED: a LogQL stream selector puts an implicit \"and\" between its "+
+				"matchers and cannot express %q; that part of the filter was left out",
+				spanset.Filters.String())
+		}
+		// A stream selector admits only =, !=, =~ and !~. An ordered comparison
+		// exists in LogQL but only as a label filter after a parser stage, and
+		// there is no parser here to put one after.
+		spellable, unspellable := emitter.SelectorSpellable(w.def, lowered)
+		for _, matcher := range unspellable {
+			w.notes.Addf("UNSUPPORTED: a LogQL stream selector cannot compare with %s; the filter "+
+				"on %q was left out", matcher.Op.Symbol(), matcher.Key)
+		}
+		matchers = append(matchers, spellable...)
+	}
 
 	parts := make([]string, 0, len(matchers))
 	for _, matcher := range matchers {
@@ -164,6 +184,18 @@ func (w *writer) emitSource(query *ir.Query) (rendered, error) {
 	}, nil
 }
 
+// labelName renders an attribute key as a LogQL label name, reporting a rewrite
+// where the key was not already one. A span attribute is dotted, and LogQL
+// admits no dot in a label name, so a query carrying one would not parse.
+func (w *writer) labelName(key string) string {
+	safe, changed := ir.FlatLabelName(key)
+	if changed {
+		w.notes.Addf("PARTIAL: LogQL label names admit no dots, so %q was written as %q",
+			key, safe)
+	}
+	return safe
+}
+
 func (w *writer) matcherText(m *ir.LabelMatcher, ctx registry.OperatorContext) (string, error) {
 	// LogQL has no IN operator either; an alternation says the same thing.
 	if len(m.Values) > 0 {
@@ -179,7 +211,7 @@ func (w *writer) matcherText(m *ir.LabelMatcher, ctx registry.OperatorContext) (
 		for _, value := range m.Values {
 			quoted = append(quoted, regexp.QuoteMeta(value))
 		}
-		return m.Key + symbol + emitter.QuoteString(strings.Join(quoted, "|"),
+		return w.labelName(m.Key) + symbol + emitter.QuoteString(strings.Join(quoted, "|"),
 			w.def.Normalizations.StringQuoting), nil
 	}
 
@@ -187,7 +219,7 @@ func (w *writer) matcherText(m *ir.LabelMatcher, ctx registry.OperatorContext) (
 	if err != nil {
 		return "", err
 	}
-	return m.Key + symbol + emitter.QuoteString(m.Value, w.def.Normalizations.StringQuoting), nil
+	return w.labelName(m.Key) + symbol + emitter.QuoteString(m.Value, w.def.Normalizations.StringQuoting), nil
 }
 
 func (w *writer) operatorSymbol(op ir.MatchOp, ctx registry.OperatorContext) (string, error) {

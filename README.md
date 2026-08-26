@@ -51,7 +51,11 @@ go install github.com/polyql/polyql/cmd/polyql@latest
 polyql translate --from promql --to logql \
   --query 'rate(http_requests_total{status="500"}[5m])'
 
-# 3. See what the translation lost, if anything
+# 3. Translate a trace query
+polyql translate --from traceql --to logql \
+  --query '{span.http.status_code = 500 && duration > 100ms}'
+
+# 4. See what the translation lost, if anything
 polyql translate --from promql --to logql \
   --query 'sum by (job) (rate(http_requests_total[5m]))' \
   --format json
@@ -66,6 +70,14 @@ polyql dashboard translate \
   --input dashboard.json \
   --output translated.json \
   --report report.md --report-format markdown
+
+# Or pull it straight from Grafana (read-only — nothing is written back)
+export GRAFANA_TOKEN=glsa_...
+polyql dashboard translate --from promql --to logql \
+  --grafana-url https://grafana.example.com --dashboard-uid abc123
+
+# Queries can be piped in, so translate composes with everything else
+cat queries.txt | polyql translate --from promql --to logql --format query-only
 
 # Use in CI — fail the build if any construct is unsupported
 polyql translate --from promql --to logql --file queries.txt || exit 1
@@ -114,9 +126,19 @@ polyql version
 | ------- | ----- | ---- | ----------------- |
 | PromQL  | ✅    | ✅   | Stable            |
 | LogQL   | ✅    | ✅   | Stable            |
-| TraceQL | 🚧    | 🚧   | Planned           |
+| TraceQL | ✅    | ✅   | Stable            |
 | NRQL    | —    | —   | Community welcome |
 | DQL     | —    | —   | Community welcome |
+
+**A note on TraceQL round trips.** Translating *within* TraceQL is lossless, and
+so is translating a span selector into PromQL or LogQL label matchers. Round
+trips *through* another language are not, and are not expected to be: a span set
+and a metric series are different things, so the return leg has nothing to
+rebuild the dropped half from. Three whole classes of construct have no TraceQL
+form at all — arithmetic (a span set is not a number), joins (spans are related
+by the trace tree instead), and the time window (Tempo takes its range as
+request parameters rather than in the query text). Each is reported rather than
+silently dropped, which is the point.
 
 ## CLI reference
 
@@ -125,7 +147,7 @@ PolyQL exposes a small command surface for interactive use and automation:
 | Command                    | Purpose                                                |
 | --------------------------- | ------------------------------------------------------ |
 | `polyql translate`          | Translate a single query, a file of queries, or stdin  |
-| `polyql dashboard translate`| Translate every panel expression in a Grafana dashboard |
+| `polyql dashboard translate`| Translate every panel expression in a Grafana dashboard, read from a file or fetched over the Grafana API |
 | `polyql registry list`      | List the languages this binary can parse and emit      |
 | `polyql registry validate`  | Check that a directory of language definitions loads    |
 | `polyql registry diff`      | Compare a directory of definitions against the built-in set |
@@ -177,6 +199,21 @@ The three flags are `FULL`, `PARTIAL`, and `UNSUPPORTED`. A score measures struc
 ## Architecture
 
 PolyQL follows a six-stage compiler pipeline: Parse → AST → Resolve → IR → Validate → Emit. The full C4 diagrams live in [docs/](docs/) and the IR model is documented in [docs/c4-level3b-ir-datamodel.mmd](docs/c4-level3b-ir-datamodel.mmd). The data-driven registry is the main extension point: adding a DSL means creating a YAML catalog and matching parser/emitter pair, without changing the compiler core.
+
+The diagrams describe the system PolyQL is aiming at, not only the one that ships today. Anything not yet built — the federation proxy, the OTel exporter — is marked `[PLANNED]` and greyed in the diagrams, and [docs/ROADMAP.md](docs/ROADMAP.md) says what each gap would take to close and which decisions have to be made first. A test in [docs/](docs/) keeps the two in step: it fails if a component marked planned has since been built, which is the direction the drift actually runs.
+
+### Trace concepts in the IR
+
+Spans need three things metrics and logs do not, so the IR names them rather than approximating:
+
+- **`SpansetSelector`** — a data source narrowed by a *boolean* predicate tree. A `Selector`'s matchers are conjunctive, which is all PromQL and LogQL can write between their braces; `{a = 1 || b = 2}` has no conjunctive form, and flattening it would silently change which spans match.
+- **`StructuralStage`** — the trace-tree relationships: `CHILD` (`>`), `DESCENDANT` (`>>`), `SIBLING` (`~`). These are *not* joins. A join correlates two sets on values the query names; a structural operator correlates them on the trace structure, which no attribute records — so a target having joins is no help, and QLS §Joins cannot express one.
+- **`CoercionStage`** — an explicit cast (QLS §Attributes > Coercion/Casting). Span attributes arrive as text, so comparing one numerically means saying so.
+
+Two further points shape how TraceQL maps on:
+
+- Scope prefixes are resolution context, not structure. An attribute key carries its own scope — `span.http.status_code`, `resource.service.name`, or a bare intrinsic such as `duration` — which keeps the IR flat and keeps a matcher comparable across DSLs with no scoping at all. Translating into one of those folds the dots to underscores, the same rule OpenTelemetry's Prometheus exporter uses, and the report says so.
+- TraceQL has no temporal/group aggregation split. There is no window in the query to aggregate over, so every aggregation collapses across spans and carries `AggScope: GROUP`. A PromQL `sum_over_time` therefore translates as an honest axis mismatch rather than a silent re-axis.
 
 ## Extending PolyQL
 

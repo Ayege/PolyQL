@@ -2,19 +2,19 @@ flowchart TD
     subgraph INPUT["Input layer"]
         A1["PromQL text\nrate(http_req_total{status='500'}[5m])"]
         A2["LogQL text\nrate({app='web'} |= 'error' [5m])"]
-        A3["TraceQL text\n{span.http.status = 500 && duration > 2s}"]
+        A3["TraceQL text\n{span.http.status_code = 500 && duration > 2s}"]
     end
 
     subgraph PARSE["1. Parse — per-DSL front end"]
         B1["PromQL parser\n(Pratt parser)"]
         B2["LogQL parser\n(Pratt parser)"]
-        B3["TraceQL parser\n(Pratt parser)"]
+        B3["TraceQL parser\n(recursive descent)"]
     end
 
     subgraph AST["2. DSL-specific AST"]
         C1["PromQL AST\nVectorSelector, RangeVector,\nCall, AggregateExpr"]
         C2["LogQL AST\nStreamSelector, PipelineStage,\nRangeAggregation"]
-        C3["TraceQL AST\nSpansetFilter, ScalarFilter,\nStructuralOp"]
+        C3["TraceQL AST\nSpanset, SpansetFilter, FieldBinary,\nStructuralExpr, AggregateExpr,\nAttributeCoercion"]
     end
 
     subgraph RESOLVE["3. Resolve — DSL → IR mapping"]
@@ -28,11 +28,11 @@ flowchart TD
     end
 
     subgraph IR["4. Telemetry IR (shared model)"]
-        F["Query\n├─ SignalType: METRIC\n├─ DataSource: name, scope, selectors\n│  └─ LabelMatcher[]: key, op, value, values\n├─ Pipeline: stages[]\n│  ├─ FilterStage: predicate, returnsBool\n│  ├─ AggregationStage: op, groupBy, scope, parameter\n│  ├─ FunctionStage: name, args, returnType\n│  ├─ JoinStage: type, on, ignoring, include\n│  └─ BinaryOpStage: op, left, right\n└─ Output: timeRange, window,\n   subqueryRange, subqueryStep"]
+        F["Query\n├─ SignalType: METRIC | LOG | SPAN | PROFILE\n├─ DataSource: name, scope\n│  ├─ Selector[] → LabelMatcher[] (conjunctive)\n│  └─ SpansetSelector → Predicate tree\n│     (boolean; what a TraceQL filter needs)\n├─ Pipeline: stages[]\n│  ├─ FilterStage: predicate, returnsBool\n│  ├─ AggregationStage: op, groupBy, scope, parameter\n│  ├─ FunctionStage: name, args, returnType\n│  ├─ JoinStage: type, on, ignoring, include\n│  ├─ BinaryOpStage: op, left, right\n│  ├─ UnaryOpStage: op, operand\n│  ├─ StructuralStage: op, right\n│  │  (CHILD | DESCENDANT | SIBLING)\n│  └─ CoercionStage: attribute, targetType\n└─ Output: timeRange, window,\n   subqueryRange, subqueryStep"]
     end
 
     subgraph VALIDATE["5. Validate"]
-        G["Semantic validator — target compatibility only\n\n(source arity and types were settled\nby the parser, which had the text)\n\n• Signal type the target queries\n• Function and aggregation availability\n• Join and subquery capability\n• Predicate operators\n  (QLS §Selection predicates)\n• Windowing alignment\n  (QLS §Time-based windowing)\n• NaN-versus-NULL sentinel semantics\n  (QLS §Aggregation math)\n• Sets TranslatabilityFlag per node:\n  FULL | PARTIAL | UNSUPPORTED"]
+        G["Semantic validator — target compatibility only\n\n(source arity and types were settled\nby the parser, which had the text)\n\n• Signal type the target queries\n• Function and aggregation availability\n• Join and subquery capability\n• Predicate operators\n  (QLS §Selection predicates)\n• Windowing alignment\n  (QLS §Time-based windowing)\n• NaN-versus-NULL sentinel semantics\n  (QLS §Aggregation math)\n• Capability checks: arithmetic,\n  temporal windows, boolean selectors,\n  attribute casts, structural operators\n• Sets TranslatabilityFlag per node:\n  FULL | PARTIAL | UNSUPPORTED"]
     end
 
     subgraph EMIT["6. Emit — per-DSL back end"]
@@ -48,7 +48,7 @@ flowchart TD
     subgraph OUTPUT["Output layer"]
         J1["Translated query text\n(notes as # comment lines,\nso the result still parses)"]
         J2["Fidelity report\n(JSON, text, Markdown)"]
-        J3["OTel span (OTLP)"]
+        J3["OTel span (OTLP)\n[PLANNED — not implemented]"]
         J4["Translated Grafana dashboard\n(expressions only; every other\nfield preserved in place)"]
     end
 
@@ -77,3 +77,6 @@ flowchart TD
     J1 --> J4
     I --> J4
     G -.->|span| J3
+
+    classDef planned fill:#fff,stroke:#999,stroke-dasharray:4 3,color:#777
+    class J3 planned

@@ -200,8 +200,14 @@ func TestAggregationCompatibility(t *testing.T) {
 	})
 
 	t.Run("sum on the group axis exists in both", func(t *testing.T) {
+		// A range aggregation comes first, because LogQL's sum reduces samples
+		// and a log stream yields lines. Without one this is not a LogQL query
+		// at all, which TestGroupAggregationNeedsSamples covers separately.
 		stage := agg(ir.AggSum, ir.AggScopeGroup)
-		query := newBuilder(ir.SignalLog, "logql").stage(stage).build()
+		query := newBuilder(ir.SignalLog, "logql").
+			stage(agg(ir.AggCount, ir.AggScopeTemporal)).
+			stage(stage).
+			build()
 
 		_, issues, _ := Validate(query, "logql", testRegistry(t))
 
@@ -597,6 +603,17 @@ func TestWindowValidation(t *testing.T) {
 	})
 }
 
+// logqlDef returns the LogQL definition, which describeOrder needs in order to
+// recognize a range aggregation written as a plain call.
+func logqlDef(t *testing.T) *registry.DSLDefinition {
+	t.Helper()
+	def, err := testRegistry(t).Get("logql")
+	if err != nil {
+		t.Fatalf("Get(\"logql\"): %v", err)
+	}
+	return def
+}
+
 // TestPipelineReordering covers the target whose syntax fixes stage order.
 func TestPipelineReordering(t *testing.T) {
 	t.Run("an already-ordered pipeline is left alone", func(t *testing.T) {
@@ -606,11 +623,11 @@ func TestPipelineReordering(t *testing.T) {
 			stage(filter("status", ir.MatchGTE, "400")).
 			stage(agg(ir.AggCount, ir.AggScopeTemporal)).
 			build()
-		before := describeOrder(query.Pipeline)
+		before := describeOrder(query.Pipeline, logqlDef(t))
 
 		_, issues, _ := Validate(query, "logql", testRegistry(t))
 
-		if after := describeOrder(query.Pipeline); after != before {
+		if after := describeOrder(query.Pipeline, logqlDef(t)); after != before {
 			t.Errorf("order changed from %q to %q", before, after)
 		}
 		if _, ok := findIssue(issues, "stage order adjusted"); ok {
@@ -631,7 +648,7 @@ func TestPipelineReordering(t *testing.T) {
 		// LogQL cannot write the original order at all, so the pipeline is
 		// rewritten — but the report says the meaning may have changed rather
 		// than presenting it as equivalent.
-		if got := describeOrder(query.Pipeline); got != "parser -> label filter" {
+		if got := describeOrder(query.Pipeline, logqlDef(t)); got != "parser -> label filter" {
 			t.Errorf("order = %q, want the parser first", got)
 		}
 		issue, ok := findIssue(issues, "stage order adjusted")
@@ -659,7 +676,7 @@ func TestPipelineReordering(t *testing.T) {
 
 		_, issues, _ := Validate(query, "logql", testRegistry(t))
 
-		if got := describeOrder(query.Pipeline); got != "line filter -> aggregation" {
+		if got := describeOrder(query.Pipeline, logqlDef(t)); got != "line filter -> aggregation" {
 			t.Errorf("order = %q, want the filter first", got)
 		}
 		if _, ok := findIssue(issues, "stage order adjusted"); ok {
@@ -684,7 +701,7 @@ func TestPipelineReordering(t *testing.T) {
 		// compose, so swapping them would be a change nobody asked for.
 		if query.Pipeline[0] != first || query.Pipeline[1] != second {
 			t.Errorf("the two line filters should keep their relative order: %s",
-				describeOrder(query.Pipeline))
+				describeOrder(query.Pipeline, logqlDef(t)))
 		}
 	})
 
@@ -703,7 +720,7 @@ func TestPipelineReordering(t *testing.T) {
 
 		if query.Pipeline[0] != aggregation || query.Pipeline[1] != valueFilter {
 			t.Errorf("order changed to %q, want the aggregation first",
-				describeOrder(query.Pipeline))
+				describeOrder(query.Pipeline, logqlDef(t)))
 		}
 		if _, ok := findIssue(issues, "stage order adjusted"); ok {
 			t.Errorf("no reordering was needed, got %v", issues)
@@ -715,11 +732,11 @@ func TestPipelineReordering(t *testing.T) {
 			stage(agg(ir.AggSum, ir.AggScopeGroup)).
 			stage(filter(ir.FieldValue, ir.MatchGT, "5")).
 			build()
-		before := describeOrder(query.Pipeline)
+		before := describeOrder(query.Pipeline, logqlDef(t))
 
 		_, issues, _ := Validate(query, "promql", testRegistry(t))
 
-		if after := describeOrder(query.Pipeline); after != before {
+		if after := describeOrder(query.Pipeline, logqlDef(t)); after != before {
 			t.Errorf("PromQL nests rather than chaining, so order should be untouched: %q -> %q",
 				before, after)
 		}
@@ -734,8 +751,11 @@ func TestWorstTranslatabilityOnMixedTree(t *testing.T) {
 	unsupported := agg(ir.AggHistogramQuantile, ir.AggScopeGroup)
 	clean := agg(ir.AggSum, ir.AggScopeGroup)
 
+	// The range aggregation is what makes the sum expressible; see the note in
+	// TestAggregationCompatibility.
 	query := newBuilder(ir.SignalLog, "promql").
 		stage(partial).
+		stage(agg(ir.AggCount, ir.AggScopeTemporal)).
 		stage(clean).
 		stage(unsupported).
 		build()
@@ -806,12 +826,14 @@ func TestValidateEdgeCases(t *testing.T) {
 
 	t.Run("unknown target DSL", func(t *testing.T) {
 		query := newBuilder(ir.SignalMetric, "promql").build()
-		got, issues, _ := Validate(query, "traceql", testRegistry(t))
+		// A name no definition claims. It has to be one the registry genuinely
+		// does not hold, so this cannot be a real DSL that might be added later.
+		got, issues, _ := Validate(query, "nonsuchql", testRegistry(t))
 
 		// Validate returns no error, so an unusable target is reported the same
 		// way as anything else the translation cannot do.
 		assertFlag(t, got, ir.TranslatabilityUnsupported)
-		if _, ok := findIssue(issues, `no registry definition for target "traceql"`); !ok {
+		if _, ok := findIssue(issues, `no registry definition for target "nonsuchql"`); !ok {
 			t.Errorf("expected a target issue, got %v", issues)
 		}
 	})
@@ -1043,6 +1065,430 @@ func TestContainmentIsApproximated(t *testing.T) {
 				stage(filter(ir.FieldBody, op, "error")).build()
 			_, issues, _ := Validate(query, "logql", testRegistry(t))
 			assertNoIssues(t, issues)
+		}
+	})
+}
+
+// spanBuilder starts a span query whose source carries a boolean filter, which
+// is the shape only a TraceQL source produces.
+func spanBuilder(sourceDSL string, filter ir.Predicate) *queryBuilder {
+	q := &ir.Query{
+		Signal: ir.SignalSpan,
+		Source: &ir.DataSource{
+			Scope:   ir.ScopeSpan,
+			Spanset: &ir.SpansetSelector{Filters: filter},
+		},
+		Output: &ir.Output{},
+	}
+	if sourceDSL != "" {
+		q.Hints = map[string]string{ir.HintSourceDSL: sourceDSL}
+	}
+	return &queryBuilder{query: q}
+}
+
+func spanMatch(key string, op ir.MatchOp, value string) ir.Predicate {
+	return &ir.MatchPredicate{Matcher: &ir.LabelMatcher{Key: key, Op: op, Value: value}}
+}
+
+// TestSpansetFilterCompatibility covers the two independent ways a span set
+// filter can outrun a target's selector.
+func TestSpansetFilterCompatibility(t *testing.T) {
+	t.Run("a conjunction lowers into a conjunctive selector", func(t *testing.T) {
+		query := spanBuilder("traceql", &ir.LogicalPredicate{
+			Op: ir.LogicalAnd,
+			Operands: []ir.Predicate{
+				spanMatch("service", ir.MatchEQ, "web"),
+				spanMatch("method", ir.MatchEQ, "GET"),
+			},
+		}).build()
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		if _, ok := findIssue(issues, "implicit \"and\""); ok {
+			t.Errorf("an AND-tree lowers exactly and should not be reported: %v", issues)
+		}
+	})
+
+	t.Run("a disjunction cannot be written at all", func(t *testing.T) {
+		spanset := &ir.SpansetSelector{Filters: &ir.LogicalPredicate{
+			Op: ir.LogicalOr,
+			Operands: []ir.Predicate{
+				spanMatch("service", ir.MatchEQ, "web"),
+				spanMatch("service", ir.MatchEQ, "api"),
+			},
+		}}
+		query := &ir.Query{
+			Signal: ir.SignalSpan,
+			Source: &ir.DataSource{Spanset: spanset},
+			Output: &ir.Output{},
+			Hints:  map[string]string{ir.HintSourceDSL: "traceql"},
+		}
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		assertFlag(t, spanset, ir.TranslatabilityUnsupported)
+		if _, ok := findIssue(issues, "implicit \"and\""); !ok {
+			t.Errorf("expected a disjunction issue, got %v", issues)
+		}
+	})
+
+	t.Run("traceql keeps its own disjunction", func(t *testing.T) {
+		// The same tree translated into TraceQL is exact, since its braces hold
+		// a full boolean expression.
+		spanset := &ir.SpansetSelector{Filters: &ir.LogicalPredicate{
+			Op: ir.LogicalOr,
+			Operands: []ir.Predicate{
+				spanMatch("span.a", ir.MatchEQ, "1"),
+				spanMatch("span.b", ir.MatchEQ, "2"),
+			},
+		}}
+		query := &ir.Query{
+			Signal: ir.SignalSpan,
+			Source: &ir.DataSource{Spanset: spanset},
+			Output: &ir.Output{},
+			Hints:  map[string]string{ir.HintSourceDSL: "traceql"},
+		}
+
+		_, issues, _ := Validate(query, "traceql", testRegistry(t))
+
+		assertFlag(t, spanset, ir.TranslatabilityFull)
+		assertNoIssues(t, issues)
+	})
+
+	t.Run("an ordered comparison has no selector form", func(t *testing.T) {
+		// LogQL has ">", but only as a label filter after a parser stage. A
+		// stream selector takes =, !=, =~ and !~ and nothing else, so writing
+		// this into the braces would produce text that does not parse.
+		query := spanBuilder("traceql", spanMatch("duration", ir.MatchGT, "100ms")).build()
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		if _, ok := findIssue(issues, "inside a selector"); !ok {
+			t.Errorf("expected a selector-context issue, got %v", issues)
+		}
+	})
+}
+
+// TestScopedAttributeIsPartial covers the rename a flat label namespace forces.
+func TestScopedAttributeIsPartial(t *testing.T) {
+	query := spanBuilder("traceql", spanMatch("span.http.status_code", ir.MatchEQ, "500")).build()
+
+	_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+	issue, ok := findIssue(issues, "flat label namespace")
+	if !ok {
+		t.Fatalf("expected a scope-folding issue, got %v", issues)
+	}
+	if issue.Flag != ir.TranslatabilityPartial {
+		t.Errorf("Flag = %s, want PARTIAL: the rename is faithful in meaning", issue.Flag)
+	}
+	// The reported name must be the one the emitter actually writes, or the note
+	// describes something other than the output.
+	if !strings.Contains(issue.Reason, "span_http_status_code") {
+		t.Errorf("reason %q should name the rewritten key", issue.Reason)
+	}
+
+	t.Run("traceql keeps the scope", func(t *testing.T) {
+		query := spanBuilder("traceql", spanMatch("span.http.status_code", ir.MatchEQ, "500")).build()
+		_, issues, _ := Validate(query, "traceql", testRegistry(t))
+		if _, ok := findIssue(issues, "flat label namespace"); ok {
+			t.Errorf("TraceQL has scoped attributes and should not report a fold: %v", issues)
+		}
+	})
+}
+
+// TestStructuralCompatibility covers the relationship no non-span target has,
+// including one that does have joins.
+func TestStructuralCompatibility(t *testing.T) {
+	for _, target := range []string{"logql", "promql"} {
+		t.Run(target, func(t *testing.T) {
+			stage := &ir.StructuralStage{Op: ir.StructuralDescendant}
+			query := spanBuilder("traceql", nil).stage(stage).build()
+
+			_, issues, _ := Validate(query, target, testRegistry(t))
+
+			assertFlag(t, stage, ir.TranslatabilityUnsupported)
+			issue, ok := findIssue(issues, "position in a trace")
+			if !ok {
+				t.Fatalf("expected a structural issue, got %v", issues)
+			}
+			if issue.SourceConstruct != "DESCENDANT" {
+				t.Errorf("SourceConstruct = %q", issue.SourceConstruct)
+			}
+		})
+	}
+
+	// PromQL has joins, which is the point: a join correlates on values the
+	// query names, and a descendant relationship on structure nothing records.
+	// Having joins is therefore no help at all.
+	t.Run("having joins does not help", func(t *testing.T) {
+		defs := testRegistry(t)
+		promql, err := defs.Get("promql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !promql.Capabilities.Joins {
+			t.Fatal("this test assumes PromQL has joins")
+		}
+	})
+
+	t.Run("traceql expresses all three", func(t *testing.T) {
+		for _, op := range []ir.StructuralOp{
+			ir.StructuralChild, ir.StructuralDescendant, ir.StructuralSibling,
+		} {
+			stage := &ir.StructuralStage{Op: op}
+			query := spanBuilder("traceql", nil).stage(stage).build()
+			_, issues, _ := Validate(query, "traceql", testRegistry(t))
+			assertFlag(t, stage, ir.TranslatabilityFull)
+			assertNoIssues(t, issues)
+		}
+	})
+}
+
+// TestCoercionCompatibility covers the cast, which only a DSL declaring
+// attribute_casts can write.
+func TestCoercionCompatibility(t *testing.T) {
+	stage := &ir.CoercionStage{Attribute: "span.http.status_code", TargetType: ir.DataTypeSignedInt}
+	query := spanBuilder("traceql", nil).stage(stage).build()
+
+	_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+	assertFlag(t, stage, ir.TranslatabilityUnsupported)
+	if _, ok := findIssue(issues, "cannot reinterpret"); !ok {
+		t.Errorf("expected a coercion issue, got %v", issues)
+	}
+
+	t.Run("traceql can", func(t *testing.T) {
+		stage := &ir.CoercionStage{Attribute: "span.x", TargetType: ir.DataTypeSignedInt}
+		query := spanBuilder("traceql", nil).stage(stage).build()
+		_, issues, _ := Validate(query, "traceql", testRegistry(t))
+		assertFlag(t, stage, ir.TranslatabilityFull)
+		assertNoIssues(t, issues)
+	})
+}
+
+// TestArithmeticCompatibility covers the capability that defaults to true, so
+// only a language without arithmetic has to declare it.
+func TestArithmeticCompatibility(t *testing.T) {
+	t.Run("traceql has none", func(t *testing.T) {
+		binary := &ir.BinaryOpStage{Op: ir.ArithDiv}
+		unary := &ir.UnaryOpStage{Op: ir.ArithNeg}
+		query := spanBuilder("promql", nil).stage(binary).stage(unary).build()
+
+		_, issues, _ := Validate(query, "traceql", testRegistry(t))
+
+		assertFlag(t, binary, ir.TranslatabilityUnsupported)
+		assertFlag(t, unary, ir.TranslatabilityUnsupported)
+		if _, ok := findIssue(issues, "no arithmetic between result sets"); !ok {
+			t.Errorf("expected an arithmetic issue, got %v", issues)
+		}
+	})
+
+	t.Run("the other targets keep it", func(t *testing.T) {
+		for _, target := range []string{"promql", "logql"} {
+			binary := &ir.BinaryOpStage{Op: ir.ArithDiv}
+			query := newBuilder(ir.SignalMetric, "promql").stage(binary).build()
+			_, issues, _ := Validate(query, target, testRegistry(t))
+			assertFlag(t, binary, ir.TranslatabilityFull)
+			if _, ok := findIssue(issues, "no arithmetic"); ok {
+				t.Errorf("%s has arithmetic and should not report otherwise: %v", target, issues)
+			}
+		}
+	})
+}
+
+// TestTemporalWindowCompatibility covers a target that cannot carry a time range
+// inside the query at all, which is a difference in results rather than in
+// spelling.
+func TestTemporalWindowCompatibility(t *testing.T) {
+	query := newBuilder(ir.SignalMetric, "promql").
+		window(5*time.Minute, ir.WindowUTCNormalized).
+		build()
+
+	_, issues, _ := Validate(query, "traceql", testRegistry(t))
+
+	assertFlag(t, query.Output.Window, ir.TranslatabilityUnsupported)
+	issue, ok := findIssue(issues, "no range selector")
+	if !ok {
+		t.Fatalf("expected a window issue, got %v", issues)
+	}
+	if !strings.Contains(issue.Reason, "outside the query") {
+		t.Errorf("reason %q should say where the range has to travel instead", issue.Reason)
+	}
+
+	t.Run("a query with no window is unaffected", func(t *testing.T) {
+		query := spanBuilder("traceql", nil).build()
+		_, issues, _ := Validate(query, "traceql", testRegistry(t))
+		assertNoIssues(t, issues)
+	})
+}
+
+// TestGroupAggregationNeedsSamples covers the gap between what the validator
+// scored and what the emitter wrote.
+//
+// LogQL's group aggregations reduce samples, and a stream selector yields log
+// lines. The IR records only "collapse across groups", so a per-stage check
+// finds COUNT on the group axis, sees that LogQL has count, and calls it FULL —
+// while the emitter reaches the same stage, finds it applied to raw log lines,
+// and drops it. That divergence is the one thing a fidelity report must never
+// have, so the check reads the pipeline as a whole.
+func TestGroupAggregationNeedsSamples(t *testing.T) {
+	t.Run("a bare group aggregation over logs cannot be written", func(t *testing.T) {
+		stage := agg(ir.AggSum, ir.AggScopeGroup)
+		query := newBuilder(ir.SignalLog, "promql").stage(stage).build()
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		assertFlag(t, stage, ir.TranslatabilityUnsupported)
+		issue, ok := findIssue(issues, "nothing here has produced")
+		if !ok {
+			t.Fatalf("expected an operand issue, got %v", issues)
+		}
+		if issue.SourceConstruct != "SUM" {
+			t.Errorf("SourceConstruct = %q", issue.SourceConstruct)
+		}
+	})
+
+	t.Run("a temporal aggregation first makes it expressible", func(t *testing.T) {
+		group := agg(ir.AggSum, ir.AggScopeGroup)
+		query := newBuilder(ir.SignalLog, "promql").
+			stage(agg(ir.AggRate, ir.AggScopeTemporal)).
+			stage(group).
+			build()
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		assertFlag(t, group, ir.TranslatabilityFull)
+		if _, ok := findIssue(issues, "nothing here has produced"); ok {
+			t.Errorf("a range aggregation ran first, so the sum is writable: %v", issues)
+		}
+	})
+
+	t.Run("a range function counts as producing samples", func(t *testing.T) {
+		// bytes_rate has no IR aggregation operator, so it reaches the IR as a
+		// plain FunctionStage — but it is still a range aggregation, and the
+		// registry says so through the argument type it consumes.
+		group := agg(ir.AggSum, ir.AggScopeGroup)
+		query := newBuilder(ir.SignalLog, "logql").
+			stage(fn("bytes_rate")).
+			stage(group).
+			build()
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		assertFlag(t, group, ir.TranslatabilityFull)
+		if _, ok := findIssue(issues, "nothing here has produced"); ok {
+			t.Errorf("bytes_rate produces samples: %v", issues)
+		}
+	})
+
+	t.Run("a filter does not produce samples", func(t *testing.T) {
+		// Filters narrow the stream; they do not turn lines into numbers.
+		stage := agg(ir.AggCount, ir.AggScopeGroup)
+		query := newBuilder(ir.SignalLog, "logql").
+			stage(filter(ir.FieldBody, ir.MatchContains, "error")).
+			stage(stage).
+			build()
+
+		_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+		assertFlag(t, stage, ir.TranslatabilityUnsupported)
+		if _, ok := findIssue(issues, "nothing here has produced"); !ok {
+			t.Errorf("expected an operand issue, got %v", issues)
+		}
+	})
+
+	t.Run("targets whose source is already samples are unaffected", func(t *testing.T) {
+		// PromQL reads metrics, so its group aggregations need no conversion,
+		// and the capability defaults to false for it.
+		for _, target := range []string{"promql", "traceql"} {
+			stage := agg(ir.AggCount, ir.AggScopeGroup)
+			query := newBuilder(ir.SignalMetric, "promql").stage(stage).build()
+			_, issues, _ := Validate(query, target, testRegistry(t))
+			if _, ok := findIssue(issues, "nothing here has produced"); ok {
+				t.Errorf("%s needs no sample conversion: %v", target, issues)
+			}
+		}
+	})
+}
+
+// TestRangeFunctionKeepsItsPipelinePosition covers a reordering bug that was
+// silently corrupting valid queries.
+//
+// A function with no IR aggregation operator — LogQL's bytes_rate — used to fall
+// to the catch-all rank, which sorts after the aggregations. The reorder pass
+// then moved it past the very aggregation that consumes its samples, and the
+// emitter, finding a group aggregation applied to raw log lines, dropped it. The
+// result was that "sum(bytes_rate(...))" translated into LogQL came back as
+// "bytes_rate(...)" while still reporting full fidelity.
+func TestRangeFunctionKeepsItsPipelinePosition(t *testing.T) {
+	rangeFn := fn("bytes_rate")
+	group := agg(ir.AggSum, ir.AggScopeGroup)
+	query := newBuilder(ir.SignalLog, "logql").
+		stage(rangeFn).
+		stage(group).
+		build()
+
+	_, issues, _ := Validate(query, "logql", testRegistry(t))
+
+	if len(query.Pipeline) != 2 {
+		t.Fatalf("got %d stages, want two", len(query.Pipeline))
+	}
+	if query.Pipeline[0] != ir.PipelineStage(rangeFn) {
+		t.Errorf("the range function moved; order is now %q",
+			describeOrder(query.Pipeline, logqlDef(t)))
+	}
+	if query.Pipeline[1] != ir.PipelineStage(group) {
+		t.Errorf("the aggregation moved; order is now %q",
+			describeOrder(query.Pipeline, logqlDef(t)))
+	}
+	if _, ok := findIssue(issues, "stage order adjusted"); ok {
+		t.Errorf("nothing needed reordering, got %v", issues)
+	}
+
+	t.Run("it ranks with the aggregations", func(t *testing.T) {
+		def := logqlDef(t)
+		rangeTypes := def.RangeOperandTypes()
+		if got := rankOf(rangeFn, rangeTypes, def); got != rankAggregation {
+			t.Errorf("rank = %v, want %v", got, rankAggregation)
+		}
+		// A function over an instant vector is not a range aggregation and
+		// keeps the catch-all rank.
+		if got := rankOf(fn("label_replace"), rangeTypes, def); got != rankOther {
+			t.Errorf("label_replace rank = %v, want %v", got, rankOther)
+		}
+	})
+}
+
+// TestRangeOperandTypesAreDerived covers the registry lookup both the reorder
+// pass and the operand check depend on. It is derived rather than declared: the
+// DSL already says what a range is, through the type its temporal aggregations
+// consume.
+func TestRangeOperandTypesAreDerived(t *testing.T) {
+	reg := testRegistry(t)
+
+	logql, err := reg.Get("logql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := logql.RangeOperandTypes()
+	for _, want := range []string{"range_vector", "unwrapped_range"} {
+		if !got[want] {
+			t.Errorf("LogQL range operands = %v, want %q among them", got, want)
+		}
+	}
+	// An instant vector is what a group aggregation consumes, never a range.
+	if got["instant_vector"] {
+		t.Errorf("instant_vector is not a range operand: %v", got)
+	}
+
+	t.Run("a language with no temporal aggregations has none", func(t *testing.T) {
+		traceql, err := reg.Get("traceql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := traceql.RangeOperandTypes(); len(got) != 0 {
+			t.Errorf("TraceQL has no temporal aggregations, got %v", got)
 		}
 	})
 }

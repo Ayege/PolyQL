@@ -181,6 +181,82 @@ func Unsupported(node ir.Node) (string, bool) {
 	return reason, flag == ir.TranslatabilityUnsupported
 }
 
+// ConjunctiveMatchers flattens a span set's boolean filter into the flat matcher
+// list a DSL with conjunctive selectors can write between its braces.
+//
+// PromQL and LogQL both put an implicit "and" between the matchers in a
+// selector, so an AND-tree lowers exactly. An OR or a NOT does not: there is no
+// way to write "either of these labels" inside one selector, and dropping the
+// operand that did not fit would silently widen the query. Such a subtree is
+// therefore left out and reported through the returned flag, which the caller
+// turns into a note.
+//
+// The boolean returned is true when everything lowered faithfully.
+func ConjunctiveMatchers(predicate ir.Predicate) ([]*ir.LabelMatcher, bool) {
+	switch node := predicate.(type) {
+	case nil:
+		return nil, true
+
+	case *ir.MatchPredicate:
+		if node.Matcher == nil {
+			return nil, true
+		}
+		return []*ir.LabelMatcher{node.Matcher}, true
+
+	case *ir.LogicalPredicate:
+		if node.Op != ir.LogicalAnd {
+			// An OR or a NOT has no conjunctive form at all, so nothing from
+			// this subtree may be kept: half a disjunction is a different query.
+			return nil, false
+		}
+		var matchers []*ir.LabelMatcher
+		faithful := true
+		for _, operand := range node.Operands {
+			lowered, ok := ConjunctiveMatchers(operand)
+			if !ok {
+				faithful = false
+				continue
+			}
+			matchers = append(matchers, lowered...)
+		}
+		return matchers, faithful
+
+	default:
+		return nil, false
+	}
+}
+
+// SelectorSpellable partitions matchers into those the target can write inside a
+// selector and those it cannot.
+//
+// An operator existing in a DSL is not the same as its being writable in a
+// selector. LogQL has ">", but only as a label filter after a parser stage; a
+// stream selector admits =, !=, =~ and !~ and nothing else. A span query
+// comparing a duration therefore lowers to a matcher that would not parse, and
+// writing it anyway would produce a translation that fails on paste — the one
+// outcome the round-trip suite exists to prevent.
+func SelectorSpellable(def *registry.DSLDefinition, matchers []*ir.LabelMatcher) (
+	spellable, unspellable []*ir.LabelMatcher) {
+
+	for _, matcher := range matchers {
+		op := matcher.Op
+		// The set and containment operators are written as a regex instead, so
+		// what has to be spellable is the operator they lower to.
+		switch {
+		case op == ir.MatchIn || op == ir.MatchContains:
+			op = ir.MatchRegex
+		case op == ir.MatchNotIn || op == ir.MatchNotContains:
+			op = ir.MatchNotRegex
+		}
+		if def.SupportsIROpInContext(op, registry.OperatorContextSelector) {
+			spellable = append(spellable, matcher)
+			continue
+		}
+		unspellable = append(unspellable, matcher)
+	}
+	return spellable, unspellable
+}
+
 // durationUnits are the time units both target languages share, longest first.
 var durationUnits = []struct {
 	name string

@@ -37,7 +37,7 @@ func (t *translateOptions) render(out io.Writer, results []Result) error {
 func (t *translateOptions) renderJSON(out io.Writer, results []Result) error {
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
-	if t.file == "" && len(results) == 1 {
+	if t.isSingleQuery() && len(results) == 1 {
 		return encoder.Encode(results[0])
 	}
 	return encoder.Encode(results)
@@ -62,7 +62,7 @@ func (t *translateOptions) renderQueryOnly(out io.Writer, results []Result) erro
 }
 
 func (t *translateOptions) renderText(out io.Writer, results []Result) error {
-	single := len(results) == 1 && t.file == ""
+	single := len(results) == 1 && t.isSingleQuery()
 
 	for i, result := range results {
 		if !single {

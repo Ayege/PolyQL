@@ -211,6 +211,11 @@ func (v *validator) walk(root *ir.Query, path string) {
 			// matches its final position in the pipeline.
 			v.checkPipelineOrder(n, path)
 			v.checkSubquery(n, path)
+			// This one reads the pipeline as a whole rather than one stage, so
+			// it runs here rather than in the AggregationStage case below. It
+			// must follow the ordering pass, which may have moved the very
+			// stages it counts.
+			v.checkAggregationOperand(n, path)
 
 		case *ir.LabelMatcher:
 			// A matcher inside a selector is flagged in its own right; one
@@ -242,13 +247,147 @@ func (v *validator) walk(root *ir.Query, path string) {
 		case *ir.Window:
 			v.checkWindow(n, path)
 
-			// A BinaryOpStage and a UnaryOpStage need no check of their own: every
-			// target language has arithmetic, set operators and signs. What may not
-			// be expressible is what they combine, and the traversal descends into
-			// those operands by itself.
+		case *ir.SpansetSelector:
+			v.checkSpanset(n, path)
+
+		case *ir.StructuralStage:
+			v.checkStructural(n, path)
+
+		case *ir.CoercionStage:
+			v.checkCoercion(n, path)
+
+		case *ir.BinaryOpStage:
+			// Most targets have arithmetic, and where they do, what may not be
+			// expressible is what the operator combines rather than the operator
+			// — the traversal descends into those operands by itself. A target
+			// with no arithmetic at all is the exception, and has to say so.
+			v.checkArithmetic(n, path, strings.ToLower(n.Op.String()))
+
+		case *ir.UnaryOpStage:
+			v.checkArithmetic(n, path, strings.ToLower(n.Op.String()))
 		}
 		return true
 	})
+}
+
+// checkSpanset covers a span set filter the target's selector cannot hold.
+//
+// Two things can go wrong, and they are different. A selector that puts an
+// implicit "and" between its matchers cannot express a disjunction at all, so an
+// OR or a NOT anywhere in the tree is a refusal. And an operator the target has
+// but cannot write in a selector — LogQL's ">", which is a label filter rather
+// than a stream matcher — is a refusal for that matcher alone.
+func (v *validator) checkSpanset(spanset *ir.SpansetSelector, path string) {
+	if spanset.Filters == nil {
+		return
+	}
+
+	if !v.target.Capabilities.BooleanSelectors && !isConjunctive(spanset.Filters) {
+		v.report(spanset, path, ir.TranslatabilityUnsupported,
+			fmt.Sprintf("a %s selector puts an implicit \"and\" between its matchers, so it cannot "+
+				"express the \"or\" in this span set filter", v.targetDSL),
+			"spanset filter")
+	}
+
+	// The per-matcher check only applies where the filter sits in a selector,
+	// which is what a spanset is. A predicate in a pipeline filter is judged by
+	// checkMatcher instead, and correctly does not care about context.
+	ir.Inspect(spanset.Filters, func(node ir.Node) bool {
+		matcher, ok := node.(*ir.LabelMatcher)
+		if !ok {
+			return true
+		}
+		op := matcher.Op
+		switch {
+		case op == ir.MatchIn || op == ir.MatchContains:
+			op = ir.MatchRegex
+		case op == ir.MatchNotIn || op == ir.MatchNotContains:
+			op = ir.MatchNotRegex
+		}
+		if v.target.SupportsIROpInContext(op, registry.OperatorContextSelector) {
+			return true
+		}
+		v.report(matcher, path, ir.TranslatabilityUnsupported,
+			fmt.Sprintf("%s cannot compare with %s inside a selector, so the filter on %q "+
+				"cannot be written", v.targetDSL, matcher.Op.Symbol(), matcher.Key),
+			matcher.Op.String())
+		return true
+	})
+}
+
+// isConjunctive reports whether a predicate tree is a pure AND of comparisons,
+// which is the only shape a conjunctive selector can hold.
+func isConjunctive(predicate ir.Predicate) bool {
+	switch node := predicate.(type) {
+	case *ir.MatchPredicate:
+		return true
+	case *ir.LogicalPredicate:
+		if node.Op != ir.LogicalAnd {
+			return false
+		}
+		for _, operand := range node.Operands {
+			if !isConjunctive(operand) {
+				return false
+			}
+		}
+		return true
+	default:
+		return predicate == nil
+	}
+}
+
+// checkStructural covers a trace-tree relationship the target cannot express.
+//
+// A structural operator is not a join, so a target with joins is no help: there
+// is no attribute recording which span is whose parent, and correlating on one
+// would be a different query. This is a refusal wherever the target lacks the
+// operator.
+func (v *validator) checkStructural(stage *ir.StructuralStage, path string) {
+	if v.target.Capabilities.SupportsStructuralOp(stage.Op) {
+		return
+	}
+	if len(v.target.Capabilities.StructuralOps) == 0 {
+		v.report(stage, path, ir.TranslatabilityUnsupported,
+			fmt.Sprintf("%s has no way to relate records by their position in a trace; "+
+				"the %s relationship cannot be written",
+				v.targetDSL, strings.ToLower(stage.Op.String())),
+			stage.Op.String())
+		return
+	}
+	supported := make([]string, 0, len(v.target.Capabilities.StructuralOps))
+	for _, op := range v.target.Capabilities.StructuralOps {
+		supported = append(supported, strings.ToLower(op.String()))
+	}
+	v.report(stage, path, ir.TranslatabilityUnsupported,
+		fmt.Sprintf("%s cannot express a %s relationship (it has %s)",
+			v.targetDSL, strings.ToLower(stage.Op.String()), strings.Join(supported, ", ")),
+		stage.Op.String())
+}
+
+// checkCoercion covers a target that cannot reinterpret an attribute's type.
+func (v *validator) checkCoercion(stage *ir.CoercionStage, path string) {
+	if v.target.Capabilities.AttributeCasts {
+		return
+	}
+	v.report(stage, path, ir.TranslatabilityUnsupported,
+		fmt.Sprintf("%s cannot reinterpret %q as %s; the cast has no equivalent",
+			v.targetDSL, stage.Attribute, stage.TargetType),
+		"coercion")
+}
+
+// checkArithmetic covers a target that cannot compute over whole result sets.
+//
+// TraceQL is the case: a span set is not a number, so "a / b" has no spelling.
+// Every other language in the registry has arithmetic, which is why the
+// capability defaults to true and this usually returns at once.
+func (v *validator) checkArithmetic(stage ir.PipelineStage, path, op string) {
+	if v.target.Capabilities.Arithmetic {
+		return
+	}
+	v.report(stage, path, ir.TranslatabilityUnsupported,
+		fmt.Sprintf("%s has no arithmetic between result sets, so %q cannot be written",
+			v.targetDSL, op),
+		op)
 }
 
 // checkFilter covers what a filter stage carries beyond its predicate.
@@ -320,6 +459,61 @@ func (v *validator) checkAggregation(stage *ir.AggregationStage, path string) {
 		stage.Op.String())
 }
 
+// checkAggregationOperand covers a target whose group aggregations reduce
+// samples rather than records.
+//
+// LogQL is the case: "sum({app=\"x\"})" is not a LogQL query, because a stream
+// selector yields log lines and sum reduces samples. Something has to turn one
+// into the other first, and only a range aggregation can.
+//
+// The IR cannot see this from a single stage. An AggregationStage says "collapse
+// across groups" and nothing about what it is collapsing, so checkAggregation
+// finds COUNT on the group axis, sees that LogQL has count, and calls it FULL.
+// The emitter then reaches the same stage, finds it applied to raw log lines,
+// and drops it — leaving a report claiming full fidelity for a query that lost
+// its aggregation. Reading the pipeline as a whole is what closes that gap.
+func (v *validator) checkAggregationOperand(query *ir.Query, path string) {
+	if !v.target.Capabilities.GroupAggregationNeedsSamples {
+		return
+	}
+	// A query already reading samples needs nothing to convert: the target's own
+	// signal is what its aggregations consume.
+	if v.target.SupportsSignal(query.Signal) && query.Signal == ir.SignalMetric {
+		return
+	}
+
+	rangeTypes := v.target.RangeOperandTypes()
+	samples := false
+	for i, stage := range query.Pipeline {
+		switch node := stage.(type) {
+		case *ir.AggregationStage:
+			if node.Scope == ir.AggScopeTemporal {
+				// A temporal aggregation reduces the window into samples, which
+				// is exactly the conversion a group aggregation is waiting for.
+				samples = true
+				continue
+			}
+			if samples {
+				continue
+			}
+			v.report(node, fmt.Sprintf("%s.Pipeline[%d].%s", path, i, ir.NodeTypeName(node)),
+				ir.TranslatabilityUnsupported,
+				fmt.Sprintf("%s aggregates across groups over samples, and nothing here has produced "+
+					"any: %q would be applied to %s records, which %s cannot write",
+					v.targetDSL, strings.ToLower(node.Op.String()),
+					strings.ToLower(query.Signal.String()), v.targetDSL),
+				node.Op.String())
+
+		case *ir.FunctionStage:
+			// A function the target declares as consuming a range is one of its
+			// range aggregations written as a plain call, so it converts too.
+			if fn, ok := v.target.FunctionByIRName(node.Name); ok && fn.ReadsRangeOperand(rangeTypes) {
+				samples = true
+			}
+		}
+	}
+}
+
 // checkJoin covers a target that cannot correlate two result sets.
 func (v *validator) checkJoin(stage *ir.JoinStage, path string) {
 	if !v.target.Capabilities.Joins {
@@ -359,6 +553,20 @@ func (v *validator) checkMatcher(target ir.Node, matcher *ir.LabelMatcher, path 
 		return
 	}
 
+	// A scoped attribute key — "span.http.status_code" — has to be folded into
+	// one flat name for a target with a single label namespace, because neither
+	// PromQL nor LogQL admits a dot in a label name. The rewrite is faithful in
+	// meaning but changes what the query asks for by name, and a reader
+	// comparing the two queries side by side deserves to be told.
+	if strings.Contains(matcher.Key, ".") && !v.target.Capabilities.ScopedAttributes {
+		if safe, changed := ir.FlatLabelName(matcher.Key); changed {
+			v.report(target, path, ir.TranslatabilityPartial,
+				fmt.Sprintf("%s has one flat label namespace and admits no dot in a name, so the "+
+					"scoped attribute %q becomes %q", v.targetDSL, matcher.Key, safe),
+				matcher.Key)
+		}
+	}
+
 	if !v.target.SupportsIROp(matcher.Op) {
 		// Containment is the one predicate with a faithful fallback: an escaped
 		// pattern wrapped in .* says the same thing, so a target without a
@@ -395,6 +603,20 @@ func (v *validator) checkMatcher(target ir.Node, matcher *ir.LabelMatcher, path 
 // checkWindow covers QLS §Time Based Windowing: whether the target can express
 // the window's step and its alignment.
 func (v *validator) checkWindow(w *ir.Window, path string) {
+	// A target with no window syntax at all cannot narrow a query in time from
+	// inside the query text. TraceQL is the case: Tempo takes start and end as
+	// request parameters, so a translated query silently reads whatever range
+	// the caller asks for — a difference in results, not just in spelling.
+	if !v.target.Capabilities.TemporalWindows {
+		if !w.Step.IsZero() || !w.Offset.IsZero() {
+			v.report(w, path, ir.TranslatabilityUnsupported,
+				fmt.Sprintf("%s has no range selector: the time window has to travel outside the "+
+					"query, so %s cannot be written into it", v.targetDSL, w.Step),
+				w.Step.String())
+		}
+		return
+	}
+
 	if reason, ok := durationExpressible(v.target, w.Step); !ok {
 		v.report(w, path, ir.TranslatabilityPartial,
 			fmt.Sprintf("window step %s is not expressible in %s: %s", w.Step, v.targetDSL, reason),

@@ -1,0 +1,220 @@
+# TraceQL language definition for PolyQL.
+#
+# See promql.yaml for the full explanation of the schema. TraceQL exercises three
+# parts of it that the other two definitions leave empty — logical_operators,
+# structural_operators, and the capability flags saying what it cannot do — so
+# the reasoning for those is here rather than there.
+
+dsl: traceql
+
+# TraceQL queries spans. Every expression, including a metric extraction such as
+# count() over ({...}), starts from a span set; the number that comes out is
+# derived from spans rather than read from a metric store, which is what the IR
+# SignalType records.
+signal_types: [span]
+
+capabilities:
+  # TraceQL has no join. Spans are already related to one another by the trace
+  # tree, and the structural operators below are how that relationship is
+  # written; there is no way to correlate two span sets on their attribute
+  # values the way PromQL's vector matching does.
+  joins: false
+  join_types: []
+  # No subquery syntax: a span set cannot be evaluated repeatedly over an outer
+  # range at its own resolution.
+  subqueries: false
+  # TraceQL's filters compose with && and || rather than threading through
+  # ordered stages, so no stage may depend on an earlier one having run.
+  pipeline_ordered: false
+  # A span set is not a number. "a / b" and "-x" have no TraceQL spelling, so an
+  # IR BinaryOpStage or UnaryOpStage translated into TraceQL is UNSUPPORTED
+  # rather than approximated.
+  arithmetic: false
+  # A Tempo query carries its time range as separate start and end request
+  # parameters, not in the query text. An IR Window therefore has nowhere to go
+  # in what this emitter writes, and the caller has to carry the range itself.
+  temporal_windows: false
+  # count() over ({...}) derives a number from records that are not numbers,
+  # which is what this flag names.
+  metric_extraction: true
+  # Attributes are addressed through an explicit scope: span., resource., or a
+  # bare intrinsic such as duration. A DSL with one flat label namespace has to
+  # fold that prefix into the key or drop it.
+  scoped_attributes: true
+  # TraceQL's braces hold a full boolean expression, so {a = 1 || b = 2} is
+  # sayable here and has no form at all in a conjunctive selector.
+  boolean_selectors: true
+  # "as (span.http.status_code: int)" reinterprets an attribute's type, which
+  # QLS §Attributes > Coercion/Casting describes.
+  attribute_casts: true
+  # The trace-tree relationships TraceQL can express. Each needs a spelling
+  # under structural_operators below; the loader rejects a mismatch.
+  structural_ops: [CHILD, DESCENDANT, SIBLING]
+  # No window alignment, since there is no window. Listing none means the QLS
+  # default only, which is the honest answer for a language that cannot state
+  # an alignment at all.
+  window_alignments: []
+  # No bool modifier: a TraceQL comparison always selects spans.
+  bool_modifier: false
+
+aggregation_defaults:
+  # QLS §Aggregation, same as every DSL.
+  null_substitute_add: 0
+  null_substitute_mul: 1
+  null_substitute_div: 0
+  # A span that lacks an attribute simply does not match a predicate over it.
+  # That is already what QLS means by NULL, so nothing needs converting on the
+  # way in — the same position LogQL takes, and the opposite of PromQL's NaN.
+  nan_as_sentinel: false
+
+normalizations:
+  # count() over ({...}) by (span.name): the grouping follows the operand, since
+  # the operand is what "over" introduces.
+  aggregation_clause_position: after_operand
+  # Durations keep the units they were written with, so {duration > 100ms}
+  # stays 100ms rather than being re-derived. TraceQL admits sub-second units
+  # that a largest-unit rendering would lose.
+  duration_format: verbatim
+  # TraceQL string literals are conventionally double-quoted.
+  string_quoting: double
+
+type_coercion:
+  # A span set is the value every TraceQL expression yields. QLS has no span-set
+  # type, and STRING is the coercion that always holds for the attributes one
+  # carries.
+  spanset: STRING
+  # Attributes are text until a query says otherwise, which is what the "as"
+  # cast in the grammar is for.
+  span_attribute: STRING
+  resource_attribute: STRING
+  intrinsic_attribute: STRING
+  # The intrinsics that are not text. Naming them is what lets a comparison
+  # against a duration be type-checked rather than compared as a string.
+  duration: INTERVAL
+  status: STRING
+  kind: STRING
+  name: STRING
+  # Metric extraction yields numbers.
+  scalar: DOUBLE
+  number: DOUBLE
+  # count() counts whole spans, so its result is an integer rather than a
+  # double — the one aggregation here whose type is not DOUBLE.
+  count: SIGNED_INT
+
+metric_types:
+  # TraceQL declares no metric types: nothing about a span says "counter".
+  # These describe what its extractions produce, so the resolver can label the
+  # IR source honestly rather than leaving it UNKNOWN.
+  unknown: UNKNOWN
+  # count() over a span set counts within the request's time range, which is a
+  # delta rather than a running total.
+  counter: DELTA_COUNTER
+  # An extracted numeric attribute fluctuates freely.
+  gauge: GAUGE
+
+operators:
+  # Comparison predicates, written inside a span set's braces. TraceQL has one
+  # spelling for each and no second context to tell apart, so all are "any".
+  "=":  { ir_op: EQ,        context: any }
+  "!=": { ir_op: NEQ,       context: any }
+  "<":  { ir_op: LT,        context: any }
+  ">":  { ir_op: GT,        context: any }
+  "<=": { ir_op: LTE,       context: any }
+  ">=": { ir_op: GTE,       context: any }
+  "=~": { ir_op: REGEX,     context: any }
+  "!~": { ir_op: NOT_REGEX, context: any }
+
+# TraceQL composes whole predicates with these, which is a different operation
+# from comparing one attribute against one operand — so they are a table of
+# their own rather than entries above. See LogicalOperatorDef.
+logical_operators:
+  "&&": { ir_op: AND }
+  "||": { ir_op: OR }
+  "!":  { ir_op: NOT }
+
+# The trace-tree relationships. They are keyed by name rather than by spelling
+# because ">" is also a comparison operator above, and a table keyed by symbol
+# could not hold both.
+#
+# Note that child and descendant are genuinely different operators in TraceQL,
+# not one operator written two ways: ">" is the direct parent-child edge and
+# ">>" is its transitive closure. Rendering both as ">>" would silently widen
+# every child query into a descendant one.
+structural_operators:
+  child:
+    symbol: ">"
+    ir_op: CHILD
+    description: "Spans whose direct parent is in the left-hand span set"
+  descendant:
+    symbol: ">>"
+    ir_op: DESCENDANT
+    description: "Spans anywhere below the left-hand span set, at any depth"
+  sibling:
+    symbol: "~"
+    ir_op: SIBLING
+    description: "Spans sharing a parent with the left-hand span set"
+
+# ## Not yet supported
+#
+# These TraceQL features are deliberately outside this pass. Each needs an IR
+# construct only TraceQL can produce, which would lower the fidelity score of
+# every other pair without buying anything in practice:
+#
+#   {} | select(...)     Column selection. The IR's Output has no projection
+#                        list, and adding one touches every emitter.
+#
+#   &<< and &>>          Union structural operators, which keep both sides of
+#                        the relationship rather than only the right. They would
+#                        need a flag on StructuralStage and a rule in every
+#                        target that cannot express it.
+#
+#   {} !> {}             Negated structural operators.
+#
+#   rate() / quantile_over_time() over spans
+#                        Tempo's newer metrics-from-traces functions. They are
+#                        temporal aggregations, and TraceQL has no window in the
+#                        query text to aggregate over — the range comes from the
+#                        request. Mapping them would mean claiming a window this
+#                        definition says does not exist.
+#
+# Adding one means extending the IR, the parser's round-trip tests and the
+# fidelity rules together, not just this file.
+
+functions:
+  # --- Metric extraction over a span set (group axis) ------------------------
+  #
+  # TraceQL has no temporal/group distinction: there is no window in the query
+  # to aggregate over, so every aggregation collapses across spans. That is the
+  # group axis, and every entry here says so. A PromQL sum_over_time therefore
+  # translates into TraceQL as a scope mismatch rather than as a clean sum,
+  # which is the honest report.
+  count:
+    ir_kind: COUNT
+    agg_scope: GROUP
+    arity: 0
+    arg_types: []
+    return_type: count
+  sum:
+    ir_kind: SUM
+    agg_scope: GROUP
+    arity: 0
+    arg_types: []
+    return_type: DOUBLE
+  avg:
+    ir_kind: AVG
+    agg_scope: GROUP
+    arity: 0
+    arg_types: []
+    return_type: DOUBLE
+  min:
+    ir_kind: MIN
+    agg_scope: GROUP
+    arity: 0
+    arg_types: []
+    return_type: DOUBLE
+  max:
+    ir_kind: MAX
+    agg_scope: GROUP
+    arity: 0
+    arg_types: []
+    return_type: DOUBLE

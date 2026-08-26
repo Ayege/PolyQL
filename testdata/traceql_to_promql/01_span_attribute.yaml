@@ -1,0 +1,15 @@
+name: span attribute to series selector
+description: A scoped span attribute folded onto PromQL's flat label namespace.
+source_dsl: traceql
+target_dsl: promql
+input: '{span.http.status_code = 500}'
+expected_output: '{span_http_status_code="500"}'
+expected_flags:
+  - path: Query.Source.Spanset.Filters
+    flag: PARTIAL
+notes: >
+  The constructs carry over — a label matcher is a label matcher — but the
+  result is a metric query against data that is not metrics. The signal mismatch
+  records that separately from the fidelity score, which is the distinction the
+  reporter exists to keep: "did every construct translate" and "can this run"
+  are different questions, and conflating them made every score meaningless.

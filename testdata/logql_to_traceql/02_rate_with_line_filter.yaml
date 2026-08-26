@@ -1,0 +1,14 @@
+name: rate over a filtered log stream into traceql
+description: A line filter and a range aggregation, neither of which spans have.
+source_dsl: logql
+target_dsl: traceql
+input: 'rate({app="web"} |= "error" [5m])'
+expected_flags:
+  - path: Query.Output.Window
+    flag: UNSUPPORTED
+notes: >
+  A line filter tests the whole log line, and a span has no line to test. The
+  containment predicate lowers to a regex over an escaped literal the way it
+  does for any target without one, but it lands on an attribute that does not
+  exist. The 5m window is the harder loss, and the flag pins it: TraceQL cannot
+  carry a range inside the query at all.

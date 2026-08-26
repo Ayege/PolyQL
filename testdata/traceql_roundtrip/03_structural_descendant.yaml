@@ -1,0 +1,12 @@
+name: descendant relationship
+description: Two span sets related by their position in the trace tree.
+source_dsl: traceql
+target_dsl: traceql
+input: '{span.http.status_code = 500} >> {status = error}'
+expected_output: '{ span.http.status_code = 500 } >> { status = error }'
+expected_fidelity_score: 1.0
+notes: >
+  A structural operator is not a join: it correlates two span sets on the trace
+  structure, which no attribute records, so QLS Joins cannot express it. The
+  ">>" must not collapse into ">" — descendant is the transitive closure of
+  child, and rendering both alike would silently widen every child query.

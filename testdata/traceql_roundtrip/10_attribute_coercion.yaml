@@ -1,0 +1,13 @@
+name: attribute coercion
+description: An explicit cast reinterpreting a span attribute's type.
+source_dsl: traceql
+target_dsl: traceql
+input: '{span.http.status_code = 500} as (span.http.status_code: int)'
+expected_output: '{ span.http.status_code = 500 } as (span.http.status_code: int)'
+expected_fidelity_score: 1.0
+notes: >
+  Span attributes arrive as text, so comparing one numerically means saying so.
+  QLS Attributes covers this as coercion into metrics. The cast is a stage
+  rather than a property of the matcher because it applies to every later
+  reference to the attribute, and because a target without casts loses the whole
+  stage rather than a corner of a predicate.

@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,9 +24,16 @@ import (
 // own few lines — which TestExitCodeMapping covers directly.
 func run(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return runStdin(t, nil, args...)
+}
+
+// runStdin is run with something piped in. A nil stdin is the interactive case,
+// where the command must ask for a query rather than block on a terminal.
+func runStdin(t *testing.T, stdin io.Reader, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
 
 	var out, errOut bytes.Buffer
-	root, _ := newRootCommand(&out, &errOut)
+	root, _ := newRootCommand(stdin, &out, &errOut)
 	root.SetArgs(args)
 	root.SetOut(&out)
 	root.SetErr(&errOut)
@@ -77,6 +88,77 @@ func TestTranslateAcrossLanguages(t *testing.T) {
 	if !strings.Contains(stdout, "Signal type") {
 		t.Errorf("the report should mention the signal mismatch:\n%s", stdout)
 	}
+}
+
+// TestTranslateTraceQL covers the span language end to end through the CLI,
+// which is the only place every parser, emitter and registry entry is loaded at
+// once the way a real binary loads them.
+func TestTranslateTraceQL(t *testing.T) {
+	t.Run("traceql into logql", func(t *testing.T) {
+		stdout, _, code := run(t,
+			"translate", "--from", "traceql", "--to", "logql",
+			"--query", `{span.http.status_code = 500}`)
+
+		// The scope prefix is folded into the label name, since LogQL admits no
+		// dot in one.
+		if !strings.Contains(stdout, `span_http_status_code="500"`) {
+			t.Errorf("the attribute should survive as a label:\n%s", stdout)
+		}
+		// A span query cannot run against a log backend, and that is reported
+		// apart from construct-level fidelity rather than as a failure.
+		if code != exitOK {
+			t.Errorf("exit = %d, want %d:\n%s", code, exitOK, stdout)
+		}
+		if !strings.Contains(stdout, "Signal type") {
+			t.Errorf("the report should mention the signal mismatch:\n%s", stdout)
+		}
+	})
+
+	t.Run("traceql into itself loses nothing", func(t *testing.T) {
+		stdout, _, code := run(t,
+			"translate", "--from", "traceql", "--to", "traceql",
+			"--query", `{span.http.status_code = 500 && duration > 100ms}`)
+
+		if code != exitOK {
+			t.Errorf("exit = %d, want %d:\n%s", code, exitOK, stdout)
+		}
+		if !strings.Contains(stdout, `{ span.http.status_code = 500 && duration > 100ms }`) {
+			t.Errorf("the query should come back intact:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, "All constructs translated fully") {
+			t.Errorf("nothing should be lost translating into the same language:\n%s", stdout)
+		}
+	})
+
+	t.Run("promql into traceql is unsupported", func(t *testing.T) {
+		stdout, _, code := run(t,
+			"translate", "--from", "promql", "--to", "traceql",
+			"--query", `rate(http_requests_total[5m])`)
+
+		// A rate over a window has no TraceQL form on either count, so the
+		// command exits non-zero on fidelity rather than succeeding quietly.
+		if code != exitFidelity {
+			t.Errorf("exit = %d, want %d:\n%s", code, exitFidelity, stdout)
+		}
+		for _, want := range []string{"no range selector", "rate"} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("the report should mention %q:\n%s", want, stdout)
+			}
+		}
+	})
+
+	t.Run("a structural operator is reported", func(t *testing.T) {
+		stdout, _, code := run(t,
+			"translate", "--from", "traceql", "--to", "promql",
+			"--query", `{.a = 1} >> {.b = 2}`)
+
+		if code != exitFidelity {
+			t.Errorf("exit = %d, want %d:\n%s", code, exitFidelity, stdout)
+		}
+		if !strings.Contains(stdout, "position in a trace") {
+			t.Errorf("the report should explain what a structural operator is:\n%s", stdout)
+		}
+	})
 }
 
 func TestTranslateJSONFormat(t *testing.T) {
@@ -421,8 +503,10 @@ func TestVersionCommand(t *testing.T) {
 	}
 	// The binary reports what it can actually translate, which depends on the
 	// packages it was built with.
-	if !strings.Contains(stdout, "logql") || !strings.Contains(stdout, "promql") {
-		t.Errorf("both languages should be listed:\n%s", stdout)
+	for _, want := range []string{"logql", "promql", "traceql"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("%q should be listed:\n%s", want, stdout)
+		}
 	}
 
 	t.Run("json", func(t *testing.T) {
@@ -431,8 +515,15 @@ func TestVersionCommand(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &info); err != nil {
 			t.Fatalf("not valid JSON: %v\n%s", err, stdout)
 		}
-		if info.Version == "" || info.GoVersion == "" || len(info.Languages) != 2 {
+		if info.Version == "" || info.GoVersion == "" {
 			t.Errorf("info = %+v", info)
+		}
+		// Asserted by membership: the binary reports what it was built with, and
+		// adding a language should not fail a test about the version command.
+		for _, want := range []string{"logql", "promql", "traceql"} {
+			if !slices.Contains(info.Languages, want) {
+				t.Errorf("languages = %v, want %q among them", info.Languages, want)
+			}
 		}
 	})
 }
@@ -443,7 +534,8 @@ func TestRegistryListCommand(t *testing.T) {
 	if code != exitOK {
 		t.Errorf("exit = %d", code)
 	}
-	for _, want := range []string{"promql", "logql", "signals: metric", "signals: log"} {
+	for _, want := range []string{"promql", "logql", "traceql",
+		"signals: metric", "signals: log", "signals: span"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("output should mention %q:\n%s", want, stdout)
 		}
@@ -460,8 +552,8 @@ func TestRegistryListCommand(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &entries); err != nil {
 			t.Fatalf("not valid JSON: %v\n%s", err, stdout)
 		}
-		if len(entries) != 2 {
-			t.Fatalf("got %d entries, want 2", len(entries))
+		if len(entries) < 3 {
+			t.Fatalf("got %d entries, want the whole compiled-in set", len(entries))
 		}
 		for _, entry := range entries {
 			if !entry.CanParse || !entry.CanEmit {
@@ -846,4 +938,217 @@ func TestDashboardOutputIsReviewable(t *testing.T) {
 	if !strings.Contains(string(written), `"expr": "rate(unclosed"`) {
 		t.Error("the unparseable panel should keep its expression")
 	}
+}
+
+// TestTranslateReadsStdin covers the input source the README and the command's
+// own help have always claimed and the code never had.
+func TestTranslateReadsStdin(t *testing.T) {
+	t.Run("a bare pipe with no source flag", func(t *testing.T) {
+		stdin := strings.NewReader("up\nrate(x[5m])\n")
+		stdout, _, code := runStdin(t, stdin,
+			"translate", "--from", "promql", "--to", "promql", "--format", "query-only")
+
+		if code != exitOK {
+			t.Errorf("exit = %d, want %d:\n%s", code, exitOK, stdout)
+		}
+		for _, want := range []string{"up", "rate(x[5m])"} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("%q should have been translated:\n%s", want, stdout)
+			}
+		}
+	})
+
+	t.Run("--file - reads stdin", func(t *testing.T) {
+		stdin := strings.NewReader("up\n")
+		stdout, _, code := runStdin(t, stdin,
+			"translate", "--from", "promql", "--to", "promql",
+			"--file", "-", "--format", "query-only")
+
+		if code != exitOK {
+			t.Errorf("exit = %d, want %d:\n%s", code, exitOK, stdout)
+		}
+		if got := strings.TrimSpace(stdout); got != "up" {
+			t.Errorf("output = %q, want the query alone", got)
+		}
+	})
+
+	t.Run("blank lines and comments are skipped, as in a file", func(t *testing.T) {
+		stdin := strings.NewReader("# a note\n\nup\n\n# another\nx\n")
+		stdout, _, _ := runStdin(t, stdin,
+			"translate", "--from", "promql", "--to", "promql", "--format", "query-only")
+
+		lines := strings.Fields(strings.TrimSpace(stdout))
+		if len(lines) != 2 {
+			t.Errorf("got %d queries, want 2:\n%s", len(lines), stdout)
+		}
+	})
+
+	t.Run("a pipe renders as a list, like a file", func(t *testing.T) {
+		// A caller reading a stream cannot know how many results will come back,
+		// so the shape must not change with the count.
+		stdin := strings.NewReader("up\n")
+		stdout, _, _ := runStdin(t, stdin,
+			"translate", "--from", "promql", "--to", "promql", "--format", "json")
+
+		if !strings.HasPrefix(strings.TrimSpace(stdout), "[") {
+			t.Errorf("a piped stream should render as a list:\n%s", stdout)
+		}
+		var results []Result
+		if err := json.Unmarshal([]byte(stdout), &results); err != nil {
+			t.Fatalf("output is not valid JSON: %v\n%s", err, stdout)
+		}
+		if len(results) != 1 {
+			t.Errorf("got %d results, want 1", len(results))
+		}
+	})
+
+	t.Run("an inline query still renders as an object", func(t *testing.T) {
+		// Piping must not change the shape for a caller who named one query.
+		stdin := strings.NewReader("ignored\n")
+		stdout, _, _ := runStdin(t, stdin,
+			"translate", "--from", "promql", "--to", "promql",
+			"--query", "up", "--format", "json")
+
+		if !strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+			t.Errorf("one inline query should render as an object:\n%s", stdout)
+		}
+		// --query wins over whatever is on the pipe.
+		if strings.Contains(stdout, "ignored") {
+			t.Errorf("--query should take precedence over stdin:\n%s", stdout)
+		}
+	})
+
+	t.Run("no source and no pipe asks for one", func(t *testing.T) {
+		_, stderr, code := runStdin(t, nil,
+			"translate", "--from", "promql", "--to", "promql")
+
+		if code != exitError {
+			t.Errorf("exit = %d, want %d", code, exitError)
+		}
+		// The message has to name every way in, or it sends the reader back to
+		// --help to discover the one it left out.
+		for _, want := range []string{"--query", "--file", "stdin"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("the error should mention %q:\n%s", want, stderr)
+			}
+		}
+	})
+
+	t.Run("--file - with no pipe says so", func(t *testing.T) {
+		_, stderr, code := runStdin(t, nil,
+			"translate", "--from", "promql", "--to", "promql", "--file", "-")
+
+		if code != exitError {
+			t.Errorf("exit = %d, want %d", code, exitError)
+		}
+		if !strings.Contains(stderr, "nothing was piped in") {
+			t.Errorf("the error should say what is missing:\n%s", stderr)
+		}
+	})
+
+	t.Run("an empty pipe is an error, not an empty success", func(t *testing.T) {
+		_, stderr, code := runStdin(t, strings.NewReader(""),
+			"translate", "--from", "promql", "--to", "promql")
+
+		if code != exitError {
+			t.Errorf("exit = %d, want %d", code, exitError)
+		}
+		if !strings.Contains(stderr, "stdin holds no queries") {
+			t.Errorf("the error should name stdin:\n%s", stderr)
+		}
+	})
+}
+
+// TestDashboardFromGrafana covers fetching a dashboard over HTTP instead of
+// reading a file — the transport half that the diagrams promised and the code
+// did not have.
+func TestDashboardFromGrafana(t *testing.T) {
+	const response = `{"meta":{},"dashboard":{"uid":"abc123","title":"API overview",
+	  "panels":[{"id":1,"title":"Request rate",
+	    "targets":[{"refId":"A","expr":"rate(http_requests_total[5m])"}]}]}}`
+
+	t.Run("fetches, translates and never writes back", func(t *testing.T) {
+		var methods []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			methods = append(methods, r.Method)
+			_, _ = w.Write([]byte(response))
+		}))
+		defer server.Close()
+		t.Setenv("GRAFANA_TOKEN", "glsa_test")
+
+		stdout, _, code := run(t,
+			"dashboard", "translate", "--from", "promql", "--to", "logql",
+			"--grafana-url", server.URL, "--dashboard-uid", "abc123")
+
+		if code != exitOK {
+			t.Errorf("exit = %d, want %d:\n%s", code, exitOK, stdout)
+		}
+		if !strings.Contains(stdout, "rate(") {
+			t.Errorf("the translated dashboard should reach stdout:\n%s", stdout)
+		}
+		// Fetching is read-only. A translated dashboard pushed back over the
+		// API would overwrite the panels people are on call with.
+		for _, m := range methods {
+			if m != http.MethodGet {
+				t.Errorf("the client issued a %s; fetching must be read-only", m)
+			}
+		}
+	})
+
+	t.Run("a fetch failure is reported, not swallowed", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		_, stderr, code := run(t,
+			"dashboard", "translate", "--from", "promql", "--to", "logql",
+			"--grafana-url", server.URL, "--dashboard-uid", "nosuch")
+
+		if code != exitError {
+			t.Errorf("exit = %d, want %d", code, exitError)
+		}
+		if !strings.Contains(stderr, "nosuch") {
+			t.Errorf("the error should name the uid:\n%s", stderr)
+		}
+	})
+
+	t.Run("naming no source at all asks for one", func(t *testing.T) {
+		_, stderr, code := run(t, "dashboard", "translate", "--from", "promql", "--to", "logql")
+
+		if code != exitError {
+			t.Errorf("exit = %d, want %d", code, exitError)
+		}
+		for _, want := range []string{"--input", "--grafana-url", "GRAFANA_TOKEN"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("the error should mention %q:\n%s", want, stderr)
+			}
+		}
+	})
+
+	t.Run("the two sources are mutually exclusive", func(t *testing.T) {
+		// The uid is given too, so that the "required together" rule is
+		// satisfied and exclusivity is what this exercises.
+		_, stderr, code := run(t,
+			"dashboard", "translate", "--from", "promql", "--to", "logql",
+			"--input", "x.json",
+			"--grafana-url", "https://g.example.com", "--dashboard-uid", "abc")
+
+		if code == exitOK {
+			t.Error("naming both a file and a Grafana URL should fail")
+		}
+		if !strings.Contains(stderr, "input") || !strings.Contains(stderr, "grafana-url") {
+			t.Errorf("the error should name both conflicting flags:\n%s", stderr)
+		}
+	})
+
+	t.Run("a url without a uid is refused", func(t *testing.T) {
+		_, _, code := run(t,
+			"dashboard", "translate", "--from", "promql", "--to", "logql",
+			"--grafana-url", "https://g.example.com")
+
+		if code == exitOK {
+			t.Error("--grafana-url without --dashboard-uid should fail")
+		}
+	})
 }

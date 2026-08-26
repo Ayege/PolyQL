@@ -1,0 +1,12 @@
+name: child relationship
+description: The direct parent-child edge, kept distinct from descendant.
+source_dsl: traceql
+target_dsl: traceql
+input: '{.error = true} > {status = ok}'
+expected_output: '{ .error = true } > { status = ok }'
+expected_fidelity_score: 1.0
+notes: >
+  Paired with the descendant case so that a regression collapsing the two
+  operators fails here rather than passing quietly. A bare "status" is a
+  span-model intrinsic and stays unprefixed, while ".error" keeps the leading
+  dot that marks an unscoped attribute.
