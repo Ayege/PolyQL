@@ -47,7 +47,7 @@ Existing translators are usually single-pair and one-directional: a PromQL-to-Lo
 The playground runs the compiler itself, compiled to WebAssembly: type a query,
 pick a direction, and read the fidelity report beside the output.
 
-**<https://ayege.github.io/polyql/>**
+**<https://ayege.github.io/PolyQL/>**
 
 Nothing is sent anywhere — there is no backend, and the query never leaves the
 tab. It opens on worked examples chosen to show the range honestly, including the
