@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PolyQL Playground</title>
+<meta name="description" content="Translate PromQL, LogQL and TraceQL queries in the browser, and see exactly what each translation costs." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" />
+<link rel="stylesheet" href="styles.css" />
+<script src="examples.js"></script>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-identity">
+    <h1>PolyQL</h1>
+    <p class="tagline">Translate a query between PromQL, LogQL and TraceQL &mdash; and see what it costs.</p>
+  </div>
+  <div class="masthead-meta">
+    <span class="status" id="status" data-state="loading">
+      <span class="status-dot" aria-hidden="true"></span>
+      <span id="status-text">loading engine&hellip;</span>
+    </span>
+    <a class="repo-link" href="https://github.com/ayege/polyql">source</a>
+  </div>
+</header>
+
+<main>
+  <section class="examples" aria-label="Worked examples">
+    <span class="rail-label">Try</span>
+    <div class="chips" id="examples"></div>
+  </section>
+
+  <section class="workbench">
+    <article class="pane">
+      <div class="pane-head">
+        <label class="rail-label" for="source-dsl">from</label>
+        <select id="source-dsl" class="dsl"></select>
+      </div>
+      <textarea id="query" class="editor" spellcheck="false" autocapitalize="off" autocorrect="off"
+        aria-label="Query to translate"></textarea>
+      <p class="pane-foot" id="example-note"></p>
+    </article>
+
+    <button type="button" id="swap" class="swap" title="Swap languages" aria-label="Swap languages">
+      <span aria-hidden="true">&#8644;</span>
+    </button>
+
+    <article class="pane">
+      <div class="pane-head">
+        <label class="rail-label" for="target-dsl">to</label>
+        <select id="target-dsl" class="dsl"></select>
+        <button type="button" id="copy" class="copy">copy</button>
+      </div>
+      <pre class="output" id="output" aria-live="polite"></pre>
+      <ul class="notes" id="notes"></ul>
+    </article>
+  </section>
+
+  <section class="verdict" id="verdict" aria-live="polite">
+    <div class="verdict-head">
+      <div class="score">
+        <span class="score-value" id="score">&mdash;</span>
+        <span class="rail-label">fidelity</span>
+      </div>
+      <div class="meter-block">
+        <div class="meter" id="meter" role="img" aria-label="Node translatability breakdown"></div>
+        <p class="summary" id="summary"></p>
+      </div>
+    </div>
+    <ul class="findings" id="findings"></ul>
+  </section>
+
+  <footer class="colophon">
+    <p>
+      The page runs the compiler itself, compiled to WebAssembly. Nothing you type is
+      sent anywhere &mdash; there is no server to send it to.
+    </p>
+    <p class="build" id="build"></p>
+  </footer>
+</main>
+
+<script src="wasm_exec.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

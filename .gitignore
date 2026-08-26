@@ -59,6 +59,14 @@ __pycache__/
 # Node/npm
 node_modules/
 
+# Playground build output. Both are produced by `make playground` and both are
+# tied to the Go toolchain that built them — wasm_exec.js must match the compiler
+# that produced polyql.wasm, so a committed copy would be a version mismatch
+# waiting to happen. web/examples.js IS committed: it is generated, but it is the
+# page's content, not a build artifact.
+web/polyql.wasm
+web/wasm_exec.js
+
 # Temporary files
 *.swp
 *~

@@ -150,10 +150,13 @@ func (d *dashboardOptions) run() error {
 		return err
 	}
 
+	// A skipped panel is a translation that lost something, not a command that
+	// could not run: --skip-errors is on by default and this is precisely the
+	// behavior it promises, so exiting with the fatal code would contradict the
+	// flag. A caller that wants a bad panel to be fatal passes --skip-errors=false
+	// and gets exitError from the branch above.
 	switch {
-	case len(failures) > 0:
-		return &exitCodeError{code: exitError, err: fmt.Errorf("")}
-	case result.Summary.UnsupportedCount > 0:
+	case len(failures) > 0, result.Summary.UnsupportedCount > 0:
 		return fidelityFailure
 	case result.Summary.PartialCount > 0 && d.failOnPartial:
 		return fidelityFailure

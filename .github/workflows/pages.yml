@@ -1,0 +1,63 @@
+# Publishes the browser playground to GitHub Pages.
+#
+# The site is the compiler itself compiled to WebAssembly, so there is no server
+# to run and nothing to keep in sync with a release: whatever is on main is what
+# the page translates with. Enabling this needs Settings → Pages → Source set to
+# "GitHub Actions" once, in the repository.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  # Deploying by hand is useful when Pages is first enabled, before any commit
+  # has landed on main since.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time, and let a running one finish: cancelling a deploy
+# midway can leave the site on a half-published state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build the browser translator
+        run: make playground
+
+      - name: verify it runs
+        # The same check CI runs. A site that loads but cannot translate would
+        # be worse than a failed deploy, because nothing would report it.
+        run: node internal/playground/smoke.mjs web
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

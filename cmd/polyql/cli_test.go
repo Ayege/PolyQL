@@ -745,9 +745,12 @@ func TestDashboardTranslate(t *testing.T) {
 		stdout, stderr, code := run(t, "dashboard", "translate",
 			"--from", "promql", "--to", "logql", "--input", promqlDashboardPath)
 
-		// The sample holds one panel that will not parse.
-		if code != exitError {
-			t.Errorf("exit = %d, want %d", code, exitError)
+		// The sample holds one panel that will not parse, which under the default
+		// --skip-errors is a loss and not a failure to run. The code itself is
+		// covered by its own subtest below; asserting it here keeps this one from
+		// passing on a command that fell over before writing anything.
+		if code != exitFidelity {
+			t.Errorf("exit = %d, want %d", code, exitFidelity)
 		}
 
 		// stdout carries the dashboard alone, so it can be piped to a file.
@@ -860,6 +863,27 @@ func TestDashboardTranslate(t *testing.T) {
 			"--output", filepath.Join(dir, "out.json"))
 		if code != exitOK {
 			t.Errorf("exit = %d, want %d:\n%s", code, exitOK, stderr)
+		}
+	})
+
+	t.Run("a skipped panel exits with the fidelity code, not the error code", func(t *testing.T) {
+		// --skip-errors is on by default, and the command's own help says one bad
+		// panel does not abandon the rest of the dashboard. Exiting 2 would say
+		// the command could not run, which is the opposite of what it just did:
+		// seven of eight panels were translated and written. The distinction
+		// matters to a CI job, which reads the code and not the report.
+		_, stderr, code := run(t, "dashboard", "translate",
+			"--from", "promql", "--to", "logql", "--input", promqlDashboardPath)
+		if code != exitFidelity {
+			t.Errorf("exit = %d, want %d (a skipped panel is a loss, not a failure to run)", code, exitFidelity)
+		}
+		// The code carries no message of its own, so the report has to be the
+		// thing that explains it.
+		if !strings.Contains(stderr, "Broken panel") {
+			t.Errorf("the report should name the panel that was skipped:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "7 of 8 queries translated") {
+			t.Errorf("the report should say how much of the dashboard survived:\n%s", stderr)
 		}
 	})
 

@@ -53,6 +53,40 @@ func TestPlannedComponentsAreActuallyAbsent(t *testing.T) {
 	}
 }
 
+// builtPackages maps a component the diagrams describe as real to the package
+// that implements it. It is the mirror image of plannedPackages: that map
+// catches a diagram that understates the tree, this one catches a diagram that
+// describes something nobody built.
+var builtPackages = map[string]string{
+	"Browser playground":   "../cmd/polyql-wasm",
+	"Translating proxy":    "../pkg/proxy",
+	"Dashboard translator": "../pkg/dashboard",
+}
+
+// TestDescribedComponentsHaveSource fails when a diagram names a component as
+// built and the package behind it is empty or missing.
+func TestDescribedComponentsHaveSource(t *testing.T) {
+	diagrams := readDiagrams(t)
+
+	for component, pkg := range builtPackages {
+		described := false
+		for _, body := range diagrams {
+			for _, line := range strings.Split(body, "\n") {
+				if strings.Contains(line, component) && !strings.Contains(line, plannedMarker) {
+					described = true
+				}
+			}
+		}
+		if !described {
+			continue
+		}
+		if !hasGoSource(t, pkg) {
+			t.Errorf("the diagrams describe %q as built, but %s holds no Go source",
+				component, pkg)
+		}
+	}
+}
+
 // TestNoDiagramClaimsAnUnbuiltDependency covers the other direction for the one
 // claim that is cheap to check mechanically: a diagram may not describe an
 // OpenTelemetry exporter as real while the module has no such dependency.

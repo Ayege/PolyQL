@@ -41,6 +41,16 @@ jobs:
           git diff --exit-code -- pkg/registry/data/ \
             || { echo "::error::pkg/registry/data is stale; run 'make generate' and commit the result"; exit 1; }
 
+      - name: check the playground examples are in sync
+        run: |
+          # The page shows these results before its WebAssembly module finishes
+          # loading, so a stale file means a visitor sees one answer replaced by
+          # a different one. TestGeneratedExamplesAreCurrent covers this too;
+          # failing here names the fix.
+          go run ./internal/playground/gen web/examples.js
+          git diff --exit-code -- web/examples.js \
+            || { echo "::error::web/examples.js is stale; run 'make generate' and commit the result"; exit 1; }
+
       - name: vet
         run: go vet ./...
 
@@ -127,7 +137,29 @@ jobs:
           # The report format is --report-format; the dashboard command has no
           # --format of its own, and using one silently never ran here because
           # this job was gated behind jobs that were failing.
-          ./polyql dashboard translate --from promql --to logql --input testdata/dashboards/sample_promql.json --report-format json > /dev/null
+          #
+          # The sample dashboard deliberately holds an unsupported construct and
+          # a panel that will not parse, so this command is expected to report a
+          # loss and exit 1. Asserting the code is the point of the step: the
+          # exit codes are the CLI's contract with a CI job, and requiring 0 here
+          # would mean keeping the fixture boring enough to always succeed.
+          set +e
+          ./polyql dashboard translate --from promql --to logql \
+            --input testdata/dashboards/sample_promql.json \
+            --report-format json > /tmp/dashboard.json 2> /tmp/dashboard-report.json
+          code=$?
+          set -e
+          test "$code" = "1" || { echo "::error::dashboard translate exited $code, want 1 (translated, with losses)"; exit 1; }
+          # Exit 1 must still mean the dashboard was written: a skipped panel does
+          # not abandon the other seven.
+          python3 -c "import json,sys; d=json.load(open('/tmp/dashboard.json')); sys.exit(0 if d.get('title') else 1)" \
+            || { echo "::error::the dashboard was not written to stdout"; exit 1; }
+          grep -q '"error"' /tmp/dashboard-report.json \
+            || { echo "::error::the report does not carry the skipped panel's message"; exit 1; }
+          # And a dashboard with nothing to lose still exits 0, so the codes are
+          # distinguishing something rather than always reporting a loss.
+          ./polyql dashboard translate --from logql --to logql \
+            --input testdata/dashboards/sample_logql.json > /dev/null 2>&1
 
       - name: proxy smoke test
         run: |
@@ -165,6 +197,32 @@ jobs:
         run: |
           ./polyql translate --from promql --to logql --query 'rate(http_requests_total{status="500"}[5m])' >/dev/null
           ./polyql translate --from promql --to logql --query 'histogram_quantile(0.99, x)' --format json >/dev/null || true
+
+  playground:
+    name: playground
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: vet the browser build
+        # go vet defaults to the host platform, so the js/wasm entry point is
+        # invisible to the vet step in the test job. Check it explicitly.
+        run: GOOS=js GOARCH=wasm go vet ./cmd/polyql-wasm/
+
+      - name: build the browser translator
+        run: make playground
+
+      - name: run it
+        # The build succeeding proves only that it compiles. This loads the
+        # module the way the page does and calls its exports, so a broken
+        # JavaScript bridge fails here rather than in a visitor's browser.
+        run: node internal/playground/smoke.mjs web
 
   vhs-demo-check:
     name: vhs demo check

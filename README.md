@@ -17,6 +17,7 @@ Translate observability queries across PromQL, LogQL, and vendor DSLs without lo
 
 - [What PolyQL does](#what-polyql-does)
 - [Why it exists](#why-it-exists)
+- [Try it in the browser](#try-it-in-the-browser)
 - [Quick start](#quick-start)
 - [Installation](#installation)
 - [Supported DSLs](#supported-dsls)
@@ -40,6 +41,27 @@ PolyQL translates observability queries between PromQL, LogQL, TraceQL, and exte
 OpenTelemetry standardized how telemetry is ingested; query languages remain fragmented across metrics, logs, traces, and vendor-specific pipelines. The CNCF Query Language Standardization working group explicitly called out this gap in [cncf/toc#1770](https://github.com/cncf/toc/issues/1770): a common, reusable translation layer is future work that is not solved by the QLS effort itself. PolyQL exists to fill that gap without forcing teams to rewrite every query by hand when they move between backends.
 
 Existing translators are usually single-pair and one-directional: a PromQL-to-LogQL tool, a TraceQL-only emitter, or a dashboard converter living inside a vendor product. PolyQL is different. It is general-purpose, IR-based, and bidirectional. Query languages are described by data rather than by hard-coded compiler branches, so adding a new DSL means a YAML registry plus parser and emitter work instead of editing the core pipeline.
+
+## Try it in the browser
+
+The playground runs the compiler itself, compiled to WebAssembly: type a query,
+pick a direction, and read the fidelity report beside the output.
+
+**<https://ayege.github.io/polyql/>**
+
+Nothing is sent anywhere — there is no backend, and the query never leaves the
+tab. It opens on worked examples chosen to show the range honestly, including the
+constructs a target genuinely cannot express.
+
+To run it locally:
+
+```bash
+make playground-serve   # builds web/ and serves it on :8080
+```
+
+`make playground` builds without serving. Both copy `wasm_exec.js` from the Go
+toolchain that compiled the module — the two are version-matched, which is why
+that file is generated rather than committed.
 
 ## Quick start
 
@@ -172,6 +194,11 @@ Exit codes are the CLI's contract with a shell script or CI job — they disting
 | `1`  | The translation ran but lost something (unsupported, or partial with `--fail-on-partial`) |
 | `2`  | The command couldn't run — a query that wouldn't parse, a registry that wouldn't load, an unknown language |
 
+For `dashboard translate`, a panel whose expression will not parse is a loss and
+not a failure to run: the other panels are still translated and written, so it
+exits `1`. Passing `--skip-errors=false` makes that panel fatal instead, and the
+command exits `2` without writing a dashboard.
+
 For the full flag set on any command, run `polyql <command> --help`.
 
 ## Translating proxy
@@ -279,6 +306,8 @@ Common tasks, via the [Makefile](Makefile):
 | `make roundtrip`      | Run the round-trip fidelity tests                     |
 | `make generate`       | Regenerate the embedded registry from `registry/*.yaml` |
 | `make dashboard-demo` | Translate the sample dashboard, PromQL → LogQL         |
+| `make playground`     | Build the browser playground into `web/`               |
+| `make playground-serve` | Build it and serve it on `localhost:8080`            |
 | `make install`        | Install both binaries with version info baked in       |
 
 ## Contributing
