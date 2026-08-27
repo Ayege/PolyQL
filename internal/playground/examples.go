@@ -90,6 +90,12 @@ func Examples() []Example {
 			Source: "traceql", Target: "logql",
 			Query: `{resource.service.name = "web"} >> {status = error}`,
 		},
+		{
+			Title:  "Metric to span attributes",
+			Note:   "A metric aggregation loses its name and temporal window; spans have no such concepts.",
+			Source: "promql", Target: "traceql",
+			Query: `sum by (job) (rate(http_requests_total{env="prod"}[5m]))`,
+		},
 	}
 }
 

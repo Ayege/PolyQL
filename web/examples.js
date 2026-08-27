@@ -315,5 +315,54 @@ window.POLYQL_EXAMPLES = [
       },
       "text": "# PARTIAL: LogQL label names admit no dots, so \"resource.service.name\" was written as \"resource_service_name\"\n# UNSUPPORTED: logql has no way to relate records by their position in a trace; the descendant relationship cannot be written\n{resource_service_name=\"web\"}"
     }
+  },
+  {
+    "title": "Metric to span attributes",
+    "note": "A metric aggregation loses its name and temporal window; spans have no such concepts.",
+    "source": "promql",
+    "target": "traceql",
+    "query": "sum by (job) (rate(http_requests_total{env=\"prod\"}[5m]))",
+    "result": {
+      "notes": [
+        "UNSUPPORTED: TraceQL has no range selector; the 5m window was dropped, and the query will read whatever time range the request asks for",
+        "UNSUPPORTED: \"http_requests_total\" is a metric name, and TraceQL selects spans rather than named series; the name was dropped",
+        "UNSUPPORTED: aggregation \"rate\" is not available in traceql",
+        "UNSUPPORTED: TraceQL's sum() aggregates one named span attribute, and the query names none; the aggregation was dropped"
+      ],
+      "ok": true,
+      "output": "{ .env = \"prod\" }",
+      "report": {
+        "full": 5,
+        "nodes": [
+          {
+            "flag": "PARTIAL",
+            "path": "Query",
+            "reason": "NaN-as-sentinel semantics differ between promql and traceql; absent-data handling may vary",
+            "type": "Query"
+          },
+          {
+            "flag": "UNSUPPORTED",
+            "path": "Query.Pipeline[0].AggregationStage",
+            "reason": "aggregation \"rate\" is not available in traceql",
+            "type": "AggregationStage"
+          },
+          {
+            "flag": "UNSUPPORTED",
+            "path": "Query.Output.Window",
+            "reason": "traceql has no range selector: the time window has to travel outside the query, so 5m cannot be written into it",
+            "type": "Window"
+          }
+        ],
+        "partial": 1,
+        "score": 0.625,
+        "signalMismatch": "query is METRIC, target supports SPAN",
+        "summary": "8 nodes: 5 full, 1 partial, 2 unsupported (score: 0.62)",
+        "total": 8,
+        "unsupported": 2,
+        "worstFlag": "UNSUPPORTED",
+        "worstReason": "aggregation \"rate\" is not available in traceql"
+      },
+      "text": "# UNSUPPORTED: TraceQL has no range selector; the 5m window was dropped, and the query will read whatever time range the request asks for\n# UNSUPPORTED: \"http_requests_total\" is a metric name, and TraceQL selects spans rather than named series; the name was dropped\n# UNSUPPORTED: aggregation \"rate\" is not available in traceql\n# UNSUPPORTED: TraceQL's sum() aggregates one named span attribute, and the query names none; the aggregation was dropped\n{ .env = \"prod\" }"
+    }
   }
 ];
