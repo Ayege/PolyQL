@@ -438,8 +438,22 @@ func (w *writer) applyFunction(expr rendered, stage *ir.FunctionStage, query *ir
 	// Anything else is a call around the expression.
 	fn, ok := w.def.FunctionByIRName(stage.Name)
 	if !ok {
-		w.notes.Addf("UNSUPPORTED: function %q has no LogQL equivalent", stage.Name)
-		return expr, nil
+		// Check if there's an approximation we can use instead
+		approx := emitter.GetFunctionApproximation(DSL, stage.Name)
+		if approx != nil {
+			// Try to use the approximation
+			approxFn, ok := w.def.FunctionByIRName(approx.ApproximationName)
+			if ok {
+				w.notes.Addf("PARTIAL: %s", approx.Explanation)
+				fn = approxFn
+			} else {
+				w.notes.Addf("UNSUPPORTED: function %q has no LogQL equivalent", stage.Name)
+				return expr, nil
+			}
+		} else {
+			w.notes.Addf("UNSUPPORTED: function %q has no LogQL equivalent", stage.Name)
+			return expr, nil
+		}
 	}
 	args := make([]string, 0, len(stage.Args)+1)
 	if expr.text != "" {

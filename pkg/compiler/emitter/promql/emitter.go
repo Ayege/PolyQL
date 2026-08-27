@@ -321,7 +321,19 @@ func (w *writer) applyGroup(expr rendered, fn *registry.FunctionDef, stage *ir.A
 	var b strings.Builder
 	b.WriteString(fn.Name)
 
-	if clause := groupingClause(stage); clause != "" {
+	clause := groupingClause(stage)
+	// When there's no grouping clause at all, PromQL requires at least one label.
+	// This can happen when translating from languages that allow ungrouped aggregation.
+	// Use a synthetic label as a workaround.
+	if clause == "" && len(stage.GroupBy) == 0 && len(stage.Without) == 0 {
+		// This aggregation wants to group by nothing (e.g., LogQL's sum without(stream))
+		// Approximate with sum by (__canonical__) and note the approximation
+		w.notes.Addf("PARTIAL: PromQL requires at least one grouping label; " +
+			"aggregating across all series is approximated using a synthetic label")
+		clause = "by (__canonical__)"
+	}
+
+	if clause != "" {
 		// PromQL canonically writes the clause before the operand.
 		if w.def.Normalizations.AggregationClausePosition == registry.ClauseAfterOperand {
 			b.WriteString("(")
@@ -366,8 +378,22 @@ func (w *writer) applyFunction(expr rendered, stage *ir.FunctionStage) (rendered
 
 	fn, ok := w.def.FunctionByIRName(stage.Name)
 	if !ok {
-		w.notes.Addf("UNSUPPORTED: function %q has no PromQL equivalent", stage.Name)
-		return expr, nil
+		// Check if there's an approximation we can use instead
+		approx := emitter.GetFunctionApproximation("promql", stage.Name)
+		if approx != nil {
+			// Try to use the approximation
+			approxFn, ok := w.def.FunctionByIRName(approx.ApproximationName)
+			if ok {
+				w.notes.Addf("PARTIAL: %s", approx.Explanation)
+				fn = approxFn
+			} else {
+				w.notes.Addf("UNSUPPORTED: function %q has no PromQL equivalent", stage.Name)
+				return expr, nil
+			}
+		} else {
+			w.notes.Addf("UNSUPPORTED: function %q has no PromQL equivalent", stage.Name)
+			return expr, nil
+		}
 	}
 
 	args := make([]string, 0, len(stage.Args)+1)
@@ -512,6 +538,21 @@ func (w *writer) applyJoin(expr rendered, stage *ir.JoinStage) (rendered, error)
 // applyOutput appends the modifiers recorded on the query's output.
 func (w *writer) applyOutput(expr rendered, query *ir.Query) string {
 	text := expr.text
+
+	// Handle offset on instant queries (no range). PromQL offset only works with ranges,
+	// so add a minimal range to make the offset valid.
+	if expr.selector && query.Output != nil && query.Output.Window != nil &&
+		!query.Output.Window.Offset.IsZero() &&
+		(query.Output.Window.Step.IsZero()) {
+		// Instant query with offset - need to add a range for the offset to be valid
+		w.notes.Addf("PARTIAL: PromQL requires a range for offsets; " +
+			"added a minimal [1m] range to accommodate the offset")
+		minimalRange := "1m"
+		offsetText := " offset " + emitter.FormatDuration(query.Output.Window.Offset,
+			w.def.Normalizations.DurationFormat)
+		text += "[" + minimalRange + "]" + offsetText
+		return text
+	}
 
 	// A subquery's outer range and resolution go after the whole expression.
 	if query.Output.IsSubquery() {
@@ -746,6 +787,20 @@ func flattenPredicate(predicate ir.Predicate) ([]*ir.LabelMatcher, string) {
 		case ir.LogicalOr:
 			if matcher, ok := alternationMatcher(node); ok {
 				return []*ir.LabelMatcher{matcher}, ""
+			}
+			// Try to approximate OR across different labels by using a disjunction note
+			// This helps users understand why the filter was dropped and what alternatives exist
+			var orKeys []string
+			for _, operand := range node.Operands {
+				if mp, ok := operand.(*ir.MatchPredicate); ok && mp.Matcher != nil {
+					orKeys = append(orKeys, mp.Matcher.Key)
+				}
+			}
+			if len(orKeys) > 0 {
+				return nil, fmt.Sprintf("UNSUPPORTED: an OR of filters on different labels (%s) has "+
+					"no PromQL series-selector form; suggest splitting into multiple queries or "+
+					"use a wildcard match on one of the labels as approximation; the filter was omitted",
+					strings.Join(orKeys, ", "))
 			}
 			return nil, "UNSUPPORTED: an OR of filters on different labels has no PromQL " +
 				"series-selector form; the filter was omitted"
