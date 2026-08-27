@@ -364,5 +364,70 @@ window.POLYQL_EXAMPLES = [
       },
       "text": "# UNSUPPORTED: TraceQL has no range selector; the 5m window was dropped, and the query will read whatever time range the request asks for\n# UNSUPPORTED: \"http_requests_total\" is a metric name, and TraceQL selects spans rather than named series; the name was dropped\n# UNSUPPORTED: aggregation \"rate\" is not available in traceql\n# UNSUPPORTED: TraceQL's sum() aggregates one named span attribute, and the query names none; the aggregation was dropped\n{ .env = \"prod\" }"
     }
+  },
+  {
+    "title": "Stream to spans",
+    "note": "Log streams and span selectors both filter by attributes; the difference is what they select.",
+    "source": "logql",
+    "target": "traceql",
+    "query": "{service=\"api\", env=\"prod\"}",
+    "result": {
+      "notes": [],
+      "ok": true,
+      "output": "{ .service = \"api\" \u0026\u0026 .env = \"prod\" }",
+      "report": {
+        "full": 6,
+        "nodes": [],
+        "partial": 0,
+        "score": 1,
+        "signalMismatch": "query is LOG, target supports SPAN",
+        "summary": "6 nodes: 6 full, 0 partial, 0 unsupported (score: 1.00) — all constructs translated fully",
+        "total": 6,
+        "unsupported": 0,
+        "worstFlag": "FULL",
+        "worstReason": ""
+      },
+      "text": "{ .service = \"api\" \u0026\u0026 .env = \"prod\" }"
+    }
+  },
+  {
+    "title": "Span attributes as metrics",
+    "note": "Scoped span attributes flatten into metric labels, losing the namespace information.",
+    "source": "traceql",
+    "target": "promql",
+    "query": "{resource.service.name = \"web\" \u0026\u0026 status = error}",
+    "result": {
+      "notes": [
+        "PARTIAL: PromQL label names admit no dots, so \"resource.service.name\" was written as \"resource_service_name\""
+      ],
+      "ok": true,
+      "output": "{resource_service_name=\"web\",status=\"error\"}",
+      "report": {
+        "full": 7,
+        "nodes": [
+          {
+            "flag": "PARTIAL",
+            "path": "Query",
+            "reason": "NaN-as-sentinel semantics differ between traceql and promql; absent-data handling may vary",
+            "type": "Query"
+          },
+          {
+            "flag": "PARTIAL",
+            "path": "Query.Source.Spanset.Filters.Operands[0]",
+            "reason": "promql has one flat label namespace and admits no dot in a name, so the scoped attribute \"resource.service.name\" becomes \"resource_service_name\"",
+            "type": "MatchPredicate"
+          }
+        ],
+        "partial": 2,
+        "score": 0.7777777777777778,
+        "signalMismatch": "query is SPAN, target supports METRIC",
+        "summary": "9 nodes: 7 full, 2 partial, 0 unsupported (score: 0.78)",
+        "total": 9,
+        "unsupported": 0,
+        "worstFlag": "PARTIAL",
+        "worstReason": "NaN-as-sentinel semantics differ between traceql and promql; absent-data handling may vary"
+      },
+      "text": "# PARTIAL: PromQL label names admit no dots, so \"resource.service.name\" was written as \"resource_service_name\"\n{resource_service_name=\"web\",status=\"error\"}"
+    }
   }
 ];

@@ -96,6 +96,18 @@ func Examples() []Example {
 			Source: "promql", Target: "traceql",
 			Query: `sum by (job) (rate(http_requests_total{env="prod"}[5m]))`,
 		},
+		{
+			Title:  "Stream to spans",
+			Note:   "Log streams and span selectors both filter by attributes; the difference is what they select.",
+			Source: "logql", Target: "traceql",
+			Query: `{service="api", env="prod"}`,
+		},
+		{
+			Title:  "Span attributes as metrics",
+			Note:   "Scoped span attributes flatten into metric labels, losing the namespace information.",
+			Source: "traceql", Target: "promql",
+			Query: `{resource.service.name = "web" && status = error}`,
+		},
 	}
 }
 
